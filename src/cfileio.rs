@@ -809,7 +809,10 @@ pub fn fftopn_safe(
 
     *status = SKIP_IMAGE;
 
-    ffopen_safe(fptr, name, mode, status);
+    if ffopen_safe(fptr, name, mode, status) > 0 {
+        /* the open failed and left *fptr as None; there is no HDU to inspect. */
+        return *status;
+    }
 
     let f = (*fptr).as_mut().expect(NULL_MSG);
 
@@ -882,7 +885,10 @@ pub fn ffiopn_safe(
 
     *status = SKIP_TABLE;
 
-    ffopen_safe(fptr, name, mode, status);
+    if ffopen_safe(fptr, name, mode, status) > 0 {
+        /* the open failed and left *fptr as None; there is no HDU to inspect. */
+        return *status;
+    }
 
     let f = (*fptr).as_mut().expect(NULL_MSG);
 
@@ -12101,6 +12107,47 @@ mod tests {
             assert_eq!(status, 0);
             assert_eq!(hdutype, IMAGE_HDU);
             fits_close_file(f.take().unwrap(), &mut status);
+        });
+    }
+
+    /// Regression test: a failed open must report a nonzero status rather than
+    /// panicking. `ffopen_safe` leaves `*fptr` as `None` when it fails, so
+    /// `fftopn_safe`/`ffiopn_safe` must not go on to unwrap it.
+    #[test]
+    fn test_ffiopn_fftopn_failed_open_returns_status() {
+        with_temp_file(|filename| {
+            // `with_temp_file` hands us a path inside a fresh temp directory
+            // that has not been created yet, so this name does not exist.
+            let missing = to_buf(filename);
+
+            // A file that exists but holds no FITS header at all.
+            let dir = std::path::Path::new(filename).parent().unwrap();
+            let junk_path = dir.join("not-a-fits-file.fits");
+            std::fs::write(&junk_path, b"this is definitely not a FITS file\n").unwrap();
+            let junk = to_buf(junk_path.to_str().unwrap());
+
+            for name in [&missing, &junk] {
+                let mut status: c_int = 0;
+                let mut f: Option<Box<fitsfile>> = None;
+                let ret = ffiopn_safe(&mut f, name, READONLY, &mut status);
+                assert_ne!(status, 0, "ffiopn_safe should fail on {}", from_buf(name));
+                assert_eq!(ret, status);
+                assert!(f.is_none());
+
+                let mut status: c_int = 0;
+                let mut f: Option<Box<fitsfile>> = None;
+                let ret = fftopn_safe(&mut f, name, READONLY, &mut status);
+                assert_ne!(status, 0, "fftopn_safe should fail on {}", from_buf(name));
+                assert_eq!(ret, status);
+                assert!(f.is_none());
+
+                // `ffdopn_safe` already behaved this way; keep it honest too.
+                let mut status: c_int = 0;
+                let mut f: Option<Box<fitsfile>> = None;
+                ffdopn_safe(&mut f, name, READONLY, &mut status);
+                assert_ne!(status, 0, "ffdopn_safe should fail on {}", from_buf(name));
+                assert!(f.is_none());
+            }
         });
     }
 
