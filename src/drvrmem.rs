@@ -753,20 +753,27 @@ pub(crate) fn mem_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &mu
 
         let mut diskfile = diskfile.unwrap();
 
-        if read_fill(&mut diskfile, &mut buffer[..2]).unwrap() != 2 {
+        if !matches!(read_fill(&mut diskfile, &mut buffer[..2]), Ok(2)) {
             /* read 2 bytes */
             return READ_ERROR;
         }
 
-        if buffer[..2] == [37, 213] {
+        if buffer[..2] == [0o37, 0o213] {
             /* GZIP */
 
             /* the uncompressed file size is give at the end */
             /* of the file in the ISIZE field  (modulo 2^32) */
 
-            let tmp = diskfile.seek(SeekFrom::End(0)); /* move to end of file */
-            filesize = tmp.unwrap() as usize; /* position = size of file */
-            let _ = diskfile.seek(SeekFrom::Current(-4)); /* move back 4 bytes */
+            /* move to end of file; position = size of file */
+            filesize = match diskfile.seek(SeekFrom::End(0)) {
+                Ok(pos) => pos as usize,
+                Err(_) => return SEEK_ERROR,
+            };
+            if filesize < 4 || diskfile.seek(SeekFrom::Current(-4)).is_err() {
+                /* move back 4 bytes */
+                ffpmsg_str("compressed file is too short to be a gzip file (mem_compress_open)");
+                return READ_ERROR;
+            }
 
             match diskfile.read_exact(&mut buffer[..4]) /* read 4 bytes */ {
                 Ok(_) => (),
@@ -812,11 +819,14 @@ pub(crate) fn mem_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &mu
             }
 
             estimated = 0; /* file size is known, not estimated */
-        } else if buffer[..2] == [120, 113] {
+        } else if buffer[..2] == [0o120, 0o113] {
             /* PKZIP */
 
             /* the uncompressed file size is give at byte 22 the file */
-            diskfile.seek(SeekFrom::Start(22)).unwrap(); /* move to byte 22 */
+            if diskfile.seek(SeekFrom::Start(22)).is_err() {
+                /* move to byte 22 */
+                return SEEK_ERROR;
+            }
             match diskfile.read_exact(&mut buffer[..4]) /* read 4 bytes */ {
                 Ok(_) => (),
                 Err(_) => return READ_ERROR,
@@ -830,13 +840,13 @@ pub(crate) fn mem_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &mu
             finalsize = modulosize as usize;
 
             estimated = 0; /* file size is known, not estimated */
-        } else if buffer[..2] == [37, 36] {
+        } else if buffer[..2] == [0o37, 0o36] {
             /* PACK */
             finalsize = 0; /* for most methods we can't determine final size */
-        } else if buffer[..2] == [37, 235] {
+        } else if buffer[..2] == [0o37, 0o235] {
             /* LZW */
             finalsize = 0; /* for most methods we can't determine final size */
-        } else if buffer[..2] == [37, 240] {
+        } else if buffer[..2] == [0o37, 0o240] {
             /* LZH */
             finalsize = 0; /* for most methods we can't determine final size */
         } else if memcmp(
@@ -854,8 +864,11 @@ pub(crate) fn mem_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &mu
 
         if finalsize == 0 {
             /* estimate uncompressed file size */
-            let tmp = diskfile.seek(SeekFrom::End(0)); /* move to end of the compressed file */
-            finalsize = tmp.unwrap() as usize; /* position = size of file */
+            /* move to end of the compressed file; position = size of file */
+            finalsize = match diskfile.seek(SeekFrom::End(0)) {
+                Ok(pos) => pos as usize,
+                Err(_) => return SEEK_ERROR,
+            };
             finalsize *= 3; /* assume factor of 3 compression */
         }
 
