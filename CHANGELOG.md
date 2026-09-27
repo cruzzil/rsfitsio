@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.470.3] - 2026.09.28
+
+### Changed
+- The `*_safer` functions are renamed `*_safe` (29 public functions, e.g. `ffiopn_safer`
+  is now `ffiopn_safe`). The `fits_*` aliases are unchanged; code calling the old names
+  directly needs updating.
+
+### Fixed
+- gzip, PACK, LZW (`.Z`), LZH and PKZIP compressed files are recognised again: the magic
+  numbers were ported from C's octal escapes as decimal, so a `.fits.gz` was parsed as a
+  raw FITS header and failed to open (#138).
+- `ffiopn`/`fftopn` return an error status instead of panicking when the open fails
+  (#136, #137).
+- Read and seek failures while opening a compressed file return `READ_ERROR` /
+  `SEEK_ERROR` instead of panicking.
+
+## [0.470.2] - 2026.08.23
+
+### Changed
+- `Box<FITSfile>` replaced with a shared handle; less `unsafe` outside the FFI wrappers,
+  which are now marked with a `// FFI WRAPPER` comment.
+- The H-compress shims transpiled.
+- The transpiled C comments converted to rustdoc across the crate.
+- flate2 uses its `miniz_oxide` backend, avoiding a `zlib-rs` soundness bug.
+
+### Fixed
+- Memory leaks in the expression evaluator: scratch allocations, `fffrwc` parameter
+  arrays, `ffiter`, histogram iterator columns, parser and constant-node row buffers,
+  and BITSTR column buffers.
+- Pointer aliasing and provenance bugs found by Miri in the lexer, parser slot pointers,
+  `split_names` and the expression evaluator; the last Stacked Borrows violations; the
+  Miri run is now clean.
+- `fits_recalloc` alignment, and driver-owned memory buffers resized with Rust's
+  allocator.
+- Integer exponentiation rounds instead of truncating.
+- `colData[-1]` indexed when an expression names no columns.
+- TSTRING output slices sized from the column rather than `FLEN_VALUE`.
+- Nightly clippy lints in the `net_services` and `shared_mem` features.
+
 ## [0.470.1] - 2026.08.16
 
 ### Changed
@@ -216,7 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Notes
 
-This project is a direct Rust translation of the cfitsio C library (v4.6.2), maintaining
+This project is a direct Rust translation of the cfitsio C library (v4.7.0), maintaining
 compatibility while providing Rust's memory safety guarantees. The version numbering
 follows cfitsio's version with an additional patch number for Rust-specific changes.
 
