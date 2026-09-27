@@ -798,7 +798,10 @@ pub(crate) fn file_is_compressed(filename: &mut [c_char; FLEN_FILENAME]) -> c_in
     }
 
     /* read the first 2 bytes of the file */
-    if diskfile.unwrap().read(&mut buffer).unwrap() != 2 {
+    let Some(mut diskfile) = diskfile else {
+        return 0;
+    };
+    if !matches!(read_fill(&mut diskfile, &mut buffer), Ok(2)) {
         /* read 2 bytes */
         return 0;
     }
@@ -808,13 +811,15 @@ pub(crate) fn file_is_compressed(filename: &mut [c_char; FLEN_FILENAME]) -> c_in
     1 = this is a compressed file
     0 = not a compressed file
     */
+    /* The C compares against octal escapes ("\037\213"); the byte values
+    below are those octal numbers, i.e. gzip is 0x1f 0x8b. */
     match buffer[..2] {
-        [37, 13] => 1,     /* GZIP  */
-        [b'P', b'K'] => 1, /* PKZIP */
-        [37, 36] => 1,     /* PACK  */
-        [37, 35] => 1,     /* LZW   */
-        [b'B', b'Z'] => 1, /* BZip2 */
-        [37, 40] => 1,     /* LZH   */
+        [0o37, 0o213] => 1, /* GZIP  */
+        [b'P', b'K'] => 1,  /* PKZIP */
+        [0o37, 0o36] => 1,  /* PACK  */
+        [0o37, 0o235] => 1, /* LZW   */
+        [b'B', b'Z'] => 1,  /* BZip2 */
+        [0o37, 0o240] => 1, /* LZH   */
         _ => 0,
     }
 }

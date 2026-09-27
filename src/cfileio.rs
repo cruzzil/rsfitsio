@@ -10258,8 +10258,13 @@ mod tests {
     use crate::KeywordDatatypeMut;
     use crate::aliases::rust_api::*;
     use crate::cfileio::MAX_PREFIX_LEN;
+    use crate::drvrfile::file_is_compressed;
+    use crate::fitscore::ffgipr_safe;
     use crate::fitsio::{FLEN_FILENAME, URL_PARSE_ERROR};
+    use crate::getcoli::ffgpvi_safe;
     use crate::helpers::testhelpers::{from_buf, path_with_ext, to_buf, with_temp_file};
+    use crate::putcoli::ffppri_safe;
+    use crate::putkey::ffcrim_safe;
 
     // Helper function to create and initialize C-style string buffers
     fn create_buffer(size: usize) -> Vec<c_char> {
@@ -12146,6 +12151,129 @@ mod tests {
                 let mut f: Option<Box<fitsfile>> = None;
                 ffdopn_safe(&mut f, name, READONLY, &mut status);
                 assert_ne!(status, 0, "ffdopn_safe should fail on {}", from_buf(name));
+                assert!(f.is_none());
+            }
+        });
+    }
+
+    /// Write a small 16-bit image to `filename` and return its pixels.
+    fn write_short_image(filename: &str) -> Vec<c_short> {
+        let naxes: [c_long; 2] = [17, 11];
+        let pixels: Vec<c_short> = (0..17 * 11)
+            .map(|i| (i * 37 % 1000 - 500) as c_short)
+            .collect();
+        let mut status: c_int = 0;
+        let mut f: Option<Box<fitsfile>> = None;
+        ffinit_safe(&mut f, &to_buf(filename), &mut status);
+        let fp = f.as_deref_mut().unwrap();
+        ffcrim_safe(fp, SHORT_IMG, 2, &naxes, &mut status);
+        ffppri_safe(fp, 1, 1, pixels.len() as LONGLONG, &pixels, &mut status);
+        ffclos_safe(f.take().unwrap(), &mut status);
+        assert_eq!(status, 0, "writing the test image");
+        pixels
+    }
+
+    /// Regression test for gzip-compressed files: the magic-number checks were
+    /// ported from the C's octal escapes ("\037\213") as if they were decimal,
+    /// so a .fits.gz was never recognised as compressed and its raw gzip bytes
+    /// were parsed as a FITS header.
+    #[test]
+    fn test_ffiopn_reads_gzip_compressed_file() {
+        with_temp_file(|filename| {
+            let pixels = write_short_image(filename);
+            let gz = gzip_bytes(&std::fs::read(filename).unwrap());
+            let gz_path = format!("{filename}.gz");
+            std::fs::write(&gz_path, &gz).unwrap();
+            std::fs::remove_file(filename).unwrap();
+
+            // Both the explicit name and the bare name (CFITSIO tries the .gz
+            // suffix when the named file does not exist) must open.
+            for name in [gz_path.as_str(), filename] {
+                let mut status: c_int = 0;
+                let mut f: Option<Box<fitsfile>> = None;
+                ffiopn_safe(&mut f, &to_buf(name), READONLY, &mut status);
+                assert_eq!(status, 0, "ffiopn_safe failed on {name}");
+                let fp = f.as_deref_mut().unwrap();
+
+                let mut bitpix: c_int = 0;
+                let mut naxis: c_int = 0;
+                let mut naxes: [c_long; 2] = [0; 2];
+                ffgipr_safe(
+                    fp,
+                    2,
+                    Some(&mut bitpix),
+                    Some(&mut naxis),
+                    Some(&mut naxes),
+                    &mut status,
+                );
+                assert_eq!((status, bitpix, naxis, naxes), (0, SHORT_IMG, 2, [17, 11]));
+
+                let mut out = vec![0 as c_short; pixels.len()];
+                ffgpvi_safe(
+                    fp,
+                    1,
+                    1,
+                    out.len() as LONGLONG,
+                    0,
+                    &mut out,
+                    None,
+                    &mut status,
+                );
+                assert_eq!(status, 0);
+                assert_eq!(out, pixels);
+                ffclos_safe(f.take().unwrap(), &mut status);
+                assert_eq!(status, 0);
+            }
+        });
+    }
+
+    #[test]
+    fn test_file_is_compressed_magic_numbers() {
+        with_temp_file(|filename| {
+            let cases: [(&[u8], c_int); 8] = [
+                (&[0x1f, 0x8b, 0], 1), /* GZIP  */
+                (b"PK\0", 1),          /* PKZIP */
+                (&[0x1f, 0x1e, 0], 1), /* PACK  */
+                (&[0x1f, 0x9d, 0], 1), /* LZW   */
+                (b"BZh", 1),           /* BZip2 */
+                (&[0x1f, 0xa0, 0], 1), /* LZH   */
+                (&[37, 13, 0], 0),     /* the old, wrong "gzip" bytes */
+                (b"SIMPLE", 0),
+            ];
+            for (bytes, expected) in cases {
+                std::fs::write(filename, bytes).unwrap();
+                let mut name = to_buf(filename);
+                assert_eq!(file_is_compressed(&mut name), expected, "magic {bytes:?}");
+            }
+        });
+    }
+
+    /// A damaged gzip file must produce an error status, not a panic.
+    #[test]
+    fn test_ffiopn_corrupt_gzip_returns_status() {
+        with_temp_file(|filename| {
+            write_short_image(filename);
+            let mut damaged = gzip_bytes(&std::fs::read(filename).unwrap());
+            // Clobber the deflate stream but keep the trailer (and so the
+            // ISIZE field that sizes the memory buffer) intact.
+            let n = damaged.len();
+            for b in &mut damaged[12..n - 8] {
+                *b ^= 0x5a;
+            }
+
+            let cases: [&[u8]; 3] = [
+                &[0x1f, 0x8b],             // magic only: too short to hold ISIZE
+                &[0x1f, 0x8b, 8, 0, 0, 0], // header cut off
+                &damaged,
+            ];
+            for bytes in cases {
+                let gz_path = format!("{filename}.gz");
+                std::fs::write(&gz_path, bytes).unwrap();
+                let mut status: c_int = 0;
+                let mut f: Option<Box<fitsfile>> = None;
+                let ret = ffiopn_safe(&mut f, &to_buf(&gz_path), READONLY, &mut status);
+                assert_ne!(status, 0, "{} byte damaged gzip opened", bytes.len());
+                assert_eq!(ret, status);
                 assert!(f.is_none());
             }
         });
