@@ -199,6 +199,34 @@ mod tests {
         });
     }
 
+    /// Tile and image sizes that make the expected row count zero, and the
+    /// overflow test after it divide by zero (or overflow the division).
+    #[test]
+    fn test_non_positive_ztile_or_znaxis() {
+        for (key, value) in [
+            // With ZTILE2 = 1: rowFactor = (0 - 1) / 1 + 1 = 0.
+            ("ZNAXIS2", "0"),
+            ("ZTILE1", "-1"),
+            ("ZTILE2", "-3"),
+            ("ZNAXIS1", "0"),
+            ("ZNAXIS2", "-1"),
+        ] {
+            with_temp_file(|name| {
+                let mut bytes = compressed_short_image(name, RICE_1);
+                set_card(&mut bytes, key, value);
+                std::fs::write(name, &bytes).unwrap();
+                let mut fptr: Option<Box<fitsfile>> = None;
+                let mut status: c_int = 0;
+                open(name, &mut fptr, &mut status);
+                let f = fptr.as_mut().unwrap();
+                fits_movabs_hdu(f, 2, None, &mut status);
+                assert_ne!(status, 0, "{key} = {value}");
+                let mut st = 0;
+                fits_close_file(fptr.take().unwrap(), &mut st);
+            });
+        }
+    }
+
     /// A tile descriptor claiming far more bytes than the heap holds: refused
     /// before the tile buffer is allocated for it.
     #[test]

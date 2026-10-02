@@ -53,12 +53,12 @@ use crate::fitsio::{
     BAD_DATATYPE, BAD_DIMEN, BAD_NAXIS, BAD_PIX_NUM, BINARY_TBL, BYTE_IMG, BZIP2_1, CASEINSEN,
     COL_NOT_FOUND, DATA_COMPRESSION_ERR, DATA_DECOMPRESSION_ERR, DOUBLE_IMG, DOUBLENULLVALUE,
     END_OF_FILE, FLEN_CARD, FLEN_COMMENT, FLEN_KEYWORD, FLEN_VALUE, FLOAT_IMG, FLOATNULLVALUE,
-    GZIP_1, GZIP_2, HCOMPRESS_1, INT32BIT, LONG_IMG, LONG_MAX, LONG_MIN, LONGLONG,
-    MAX_COMPRESS_DIM, MEMORY_ALLOCATION, NEG_AXIS, NO_COMPRESSED_TILE, NO_DITHER, NOCOMPRESS,
-    NOT_BTABLE, NULL_MSG, NUM_OVERFLOW, OVERFLOW_ERR, PLIO_1, RICE_1, SBYTE_IMG, SHORT_IMG,
-    SUBTRACTIVE_DITHER_1, SUBTRACTIVE_DITHER_2, TBIT, TBYTE, TCOMPLEX, TDBLCOMPLEX, TDOUBLE,
-    TFLOAT, TINT, TLOGICAL, TLONG, TLONGLONG, TSBYTE, TSHORT, TSTRING, TUINT, TULONG, TUSHORT,
-    TYP_CKSUM_KEY, TYP_CMPRS_KEY, ULONG_IMG, USHORT_IMG, fitsfile,
+    GZIP_1, GZIP_2, HCOMPRESS_1, INT32BIT, LONG_IMG, LONG_MAX, LONGLONG, MAX_COMPRESS_DIM,
+    MEMORY_ALLOCATION, NEG_AXIS, NO_COMPRESSED_TILE, NO_DITHER, NOCOMPRESS, NOT_BTABLE, NULL_MSG,
+    NUM_OVERFLOW, OVERFLOW_ERR, PLIO_1, RICE_1, SBYTE_IMG, SHORT_IMG, SUBTRACTIVE_DITHER_1,
+    SUBTRACTIVE_DITHER_2, TBIT, TBYTE, TCOMPLEX, TDBLCOMPLEX, TDOUBLE, TFLOAT, TINT, TLOGICAL,
+    TLONG, TLONGLONG, TSBYTE, TSHORT, TSTRING, TUINT, TULONG, TUSHORT, TYP_CKSUM_KEY,
+    TYP_CMPRS_KEY, ULONG_IMG, USHORT_IMG, fitsfile,
 };
 use crate::getcolb::{fffi1i1, fffi2i1, fffi4i1, ffgsvb_safe};
 use crate::getcold::{
@@ -7393,16 +7393,19 @@ pub(crate) fn imcomp_get_compressed_image_par(infptr: &mut fitsfile, status: &mu
         );
         (infptr.Fptr).tilesize[ii] = tilesize_ii;
 
-        if (infptr.Fptr).tilesize[ii] == 0 {
-            ffpmsg_str("invalid ZTILE value = 0 in compressed image");
+        /* CFITSIO tests only for 0, but a negative tile size or image size makes */
+        /* rowFactor zero (ZNAXIS = 0 or -1), so that the overflow test below */
+        /* divides by zero, or overflows the division (ZTILE = -1) */
+        if (infptr.Fptr).tilesize[ii] < 1 {
+            ffpmsg_str("invalid ZTILE value < 1 in compressed image");
             *status = DATA_DECOMPRESSION_ERR;
             return *status;
         }
 
-        if (infptr.Fptr).znaxis[ii] == LONG_MIN
-        /* cannot subtract 1 from this */
+        if (infptr.Fptr).znaxis[ii] < 1
+        /* also: cannot subtract 1 from LONG_MIN */
         {
-            ffpmsg_str("numerical overflow in imcomp_get_compressed_image_par");
+            ffpmsg_str("invalid ZNAXIS value < 1 in compressed image");
             *status = DATA_DECOMPRESSION_ERR;
             return *status;
         }
