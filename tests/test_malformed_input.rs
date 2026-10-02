@@ -12,8 +12,8 @@ mod tests {
     use libc::{c_int, c_long};
     use rsfitsio::aliases::rust_api::*;
     use rsfitsio::fitsio::{
-        BAD_C2D, BAD_C2F, BAD_C2I, GZIP_1, LONGLONG, READONLY, RICE_1, SHORT_IMG, ULONGLONG,
-        fitsfile,
+        BAD_C2D, BAD_C2F, BAD_C2I, GZIP_1, HCOMPRESS_1, LONGLONG, READONLY, RICE_1, SHORT_IMG,
+        ULONGLONG, fitsfile,
     };
     use rsfitsio::imcompress::fits_set_compression_type_safe;
     use std::ffi::CString;
@@ -263,6 +263,20 @@ mod tests {
                 messages.iter().any(|m| m.contains("outside the heap")),
                 "{messages:?}"
             );
+        });
+    }
+
+    /// An HCOMPRESS tile whose header gives ny = 0: the decoder divides by it.
+    #[test]
+    fn test_hcompress_tile_with_zero_height() {
+        with_temp_file(|name| {
+            let mut bytes = compressed_short_image(name, HCOMPRESS_1);
+            let at = bytes
+                .windows(2)
+                .position(|w| w == [0xDD, 0x99])
+                .expect("an HCOMPRESS stream");
+            bytes[at + 6..at + 10].fill(0);
+            read_back_fails(name, &bytes);
         });
     }
 }

@@ -8817,6 +8817,18 @@ fn imcomp_decompress_tile(
     } else if (infptr.Fptr).compress_type == HCOMPRESS_1 {
         smooth = (infptr.Fptr).hcomp_smooth;
 
+        /* The decoder reads its 14-byte header (magic, nx, ny, scale, big-endian) */
+        /* without checking the stream holds it, and divides by ny: check both.   */
+        let dim = |at: usize| {
+            cbuf.get(at..at + 4)
+                .map(|b| i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        if cbuf.len() < 14 || !matches!((dim(2), dim(6)), (Some(nx), Some(ny)) if nx > 0 && ny > 0)
+        {
+            ffpmsg_str("corrupt HCOMPRESS tile header (imcomp_decompress_tile)");
+            *status = DATA_DECOMPRESSION_ERR;
+            return *status;
+        }
         let mut hcd = HCDecoder::new();
         let res = if (infptr.Fptr).zbitpix == BYTE_IMG || (infptr.Fptr).zbitpix == SHORT_IMG {
             hcd.read(&cbuf, smooth, cast_slice_mut(idata))
