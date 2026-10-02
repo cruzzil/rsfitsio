@@ -77,8 +77,6 @@ use crate::putcold::ffpcld_safe;
 use crate::putcoli::ffpcli_safe;
 use crate::scalnull::ffpscl_safe;
 
-use libc::realloc;
-
 use bytemuck::{cast, cast_slice, cast_slice_mut};
 
 use crate::pliocomp::{pl_l2pi, pl_p2li, pl_p2li_max_len};
@@ -8035,6 +8033,30 @@ fn imcomp_copy_prime2img(
     *status
 }
 
+/// Whether a variable-length array descriptor (`nelem` elements of `elsize` bytes
+/// at heap `offset`) lies inside the table's heap.
+///
+/// Not checked in CFITSIO, which allocates for the length a descriptor states and
+/// only then fails to read it. A corrupt descriptor can state any length, so the
+/// tile code checks it first rather than allocate gigabytes for a short file.
+fn descriptor_in_heap(
+    fptr: &fitsfile,
+    nelem: LONGLONG,
+    offset: LONGLONG,
+    elsize: LONGLONG,
+) -> bool {
+    let f = &fptr.Fptr;
+    let data_end = f
+        .rowlength
+        .checked_mul(f.numrows)
+        .and_then(|t| t.checked_add(f.heapsize));
+    let end = nelem
+        .checked_mul(elsize)
+        .and_then(|n| n.checked_add(offset))
+        .and_then(|n| n.checked_add(f.heapstart));
+    nelem >= 0 && offset >= 0 && matches!((end, data_end), (Some(e), Some(d)) if e <= d)
+}
+
 /// This routine decompresses one tile of the image
 #[allow(clippy::if_same_then_else)]
 // C dispatch chain: distinct conditions deliberately share an action.
@@ -8183,6 +8205,16 @@ fn imcomp_decompress_tile(
         *status = NO_COMPRESSED_TILE;
         return *status;
     }
+    let elsize = if (infptr.Fptr).compress_type == PLIO_1 {
+        2
+    } else {
+        1
+    };
+    if *status <= 0 && !descriptor_in_heap(infptr, nelemll, offset, elsize) {
+        ffpmsg_str("compressed tile descriptor points outside the heap (imcomp_decompress_tile)");
+        *status = DATA_DECOMPRESSION_ERR;
+        return *status;
+    }
 
     /* **************************************************************** */
     if nelemll == 0 {
@@ -8208,6 +8240,17 @@ fn imcomp_decompress_tile(
             if nelemll == 0 && offset == 0 {
                 /* this should never happen */
                 *status = NO_COMPRESSED_TILE;
+                return *status;
+            }
+
+            /* the values are read straight into the tile buffer, so there can be */
+            /* no more of them than the tile has pixels */
+            if *status <= 0
+                && (nelemll > LONGLONG::from(tilelen)
+                    || !descriptor_in_heap(infptr, nelemll, offset, 1))
+            {
+                ffpmsg_str("uncompressed tile descriptor is inconsistent (imcomp_decompress_tile)");
+                *status = DATA_DECOMPRESSION_ERR;
                 return *status;
             }
 
@@ -8257,6 +8300,13 @@ fn imcomp_decompress_tile(
             if nelemll == 0 && offset == 0 {
                 /* this should never happen */
                 *status = NO_COMPRESSED_TILE;
+                return *status;
+            }
+            if *status <= 0 && !descriptor_in_heap(infptr, nelemll, offset, 1) {
+                ffpmsg_str(
+                    "gzipped tile descriptor points outside the heap (imcomp_decompress_tile)",
+                );
+                *status = DATA_DECOMPRESSION_ERR;
                 return *status;
             }
 
@@ -8375,8 +8425,15 @@ fn imcomp_decompress_tile(
                 }
             } else {
                 /* uncompress the data directly into the output buffer in all  other cases */
-                // WARNING: Potentially unsafe memory issue here given this function
-                // call can reallocate the buffer.
+                /* zlib writes up to idatalen bytes through the raw pointer, so the */
+                /* buffer must really be that long */
+                if buffer.len() < idatalen {
+                    ffpmsg_str(
+                        "output buffer too small for the gzipped tile (imcomp_decompress_tile)",
+                    );
+                    *status = DATA_DECOMPRESSION_ERR;
+                    return *status;
+                }
                 if unsafe {
                     uncompress2mem_from_mem(
                         &cbuf,
@@ -8729,39 +8786,28 @@ fn imcomp_decompress_tile(
 
         let rcd = RCDecoder::new();
 
-        if (infptr.Fptr).rice_bytepix == 1 {
-            let r = rcd.decode_byte(
-                &cbuf,
-                tilelen as usize,
-                blocksize as usize,
-                cast_slice_mut(idata),
-            );
-            if r.is_err() {
-                *status = DATA_DECOMPRESSION_ERR;
-            }
+        /* The decoders want an output of exactly tilelen pixels. idata is sized */
+        /* by ZBITPIX, which a malformed header can set inconsistently with      */
+        /* BYTEPIX, so take a tilelen slice of it, if it is long enough.          */
+        let nx = tilelen as usize;
+        let r = if (infptr.Fptr).rice_bytepix == 1 {
             tiledatatype = TBYTE;
+            let out: &mut [u8] = cast_slice_mut(idata);
+            out.get_mut(..nx)
+                .map(|out| rcd.decode_byte(&cbuf, nx, blocksize as usize, out).is_ok())
         } else if (infptr.Fptr).rice_bytepix == 2 {
-            let r = rcd.decode_short(
-                &cbuf,
-                tilelen as usize,
-                blocksize as usize,
-                cast_slice_mut(idata),
-            );
-            if r.is_err() {
-                *status = DATA_DECOMPRESSION_ERR;
-            }
             tiledatatype = TSHORT;
+            let out: &mut [c_ushort] = cast_slice_mut(idata);
+            out.get_mut(..nx)
+                .map(|out| rcd.decode_short(&cbuf, nx, blocksize as usize, out).is_ok())
         } else {
-            let r = rcd.decode(
-                &cbuf,
-                tilelen as usize,
-                blocksize as usize,
-                cast_slice_mut(idata),
-            );
-            if r.is_err() {
-                *status = DATA_DECOMPRESSION_ERR;
-            }
             tiledatatype = TINT;
+            let out: &mut [c_uint] = cast_slice_mut(idata);
+            out.get_mut(..nx)
+                .map(|out| rcd.decode(&cbuf, nx, blocksize as usize, out).is_ok())
+        };
+        if r != Some(true) {
+            *status = DATA_DECOMPRESSION_ERR;
         }
 
     /* ************************************************************* */
@@ -8812,7 +8858,9 @@ fn imcomp_decompress_tile(
                 (nelemll as c_long).try_into().unwrap(),
                 &mut (idata.as_mut_ptr()),
                 &mut idatalen,
-                Some(realloc),
+                /* idata is Rust-owned and cannot be grown by realloc; it is already */
+                /* as large as any valid tile, so a longer stream is an error */
+                None,
                 Some(&mut tilebytesize),
                 status,
             );
@@ -13331,7 +13379,8 @@ pub fn fits_uncompress_table_safe(
                                             cvlalen.try_into().unwrap(),
                                             &mut uncompressed_vla.as_mut_ptr(),
                                             &mut vlamemlen,
-                                            Some(realloc),
+                                            /* Rust-owned: cannot be grown by realloc */
+                                            None,
                                             Some(&mut filesize),
                                             status,
                                         );
