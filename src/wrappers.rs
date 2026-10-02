@@ -164,7 +164,7 @@ pub fn strnlen_safe(cs: &[c_char], n: usize) -> usize {
 ///
 /// The parsed value and the index one past its last digit, or the parse error.
 pub(crate) fn strtol_safe<F: FromStr>(input: &[c_char]) -> Result<(F, usize), <F as FromStr>::Err> {
-    let strlen = input.len() - 1;
+    let strlen = input.len().saturating_sub(1);
     let input: &[u8] = cast_slice(input);
 
     // Find the first non-numeric character or the end of the string
@@ -175,21 +175,24 @@ pub(crate) fn strtol_safe<F: FromStr>(input: &[c_char]) -> Result<(F, usize), <F
         start += 1;
     }
 
+    // ASCII digits only: `char::is_numeric` also accepts bytes such as 0xB2
+    // (superscript two in Latin-1), which are not UTF-8 on their own.
     while start < strlen
-        && !(input[start] as char).is_numeric()
+        && !input[start].is_ascii_digit()
         && (input[start] as char) != '+'
         && (input[start] as char) != '-'
     {
         start += 1;
     }
 
-    end = start + 1;
+    end = (start + 1).min(input.len());
 
-    while end < strlen && (input[end] as char).is_numeric() {
+    while end < strlen && input[end].is_ascii_digit() {
         end += 1;
     }
 
-    let str = str::from_utf8(&input[start..end]).unwrap();
+    // Not text at all: let `parse` report it, as it would any other non-number.
+    let str = str::from_utf8(&input[start..end]).unwrap_or("");
 
     let res = str.parse::<F>()?;
 
@@ -254,11 +257,17 @@ pub fn strcat_safe(s: &mut [c_char], ct: &[c_char]) {
 /// Appends at most `n` characters of the NUL-terminated `ct` to the
 /// NUL-terminated `s`, adding a terminator. The safe counterpart of C
 /// `strncat`.
+///
+/// Where C would write past the end of `s`, the result is truncated to fit
+/// instead. Several of CFITSIO's error messages overflow their buffers this way
+/// (`ffc2j` appends 30 characters of the bad value to a 52-character prefix in an
+/// 81-byte buffer), and the value comes from the file being read.
 pub fn strncat_safe(s: &mut [c_char], ct: &[c_char], n: usize) {
     let s_len = strlen_safe(s);
     let ct_len = strlen_safe(ct);
 
-    let n = cmp::min(n, ct_len);
+    // `s_len < s.len()`: strlen_safe has found a terminator inside `s`.
+    let n = cmp::min(cmp::min(n, ct_len), s.len() - 1 - s_len);
     let mut i = 0;
     while i < n {
         let b = ct[i];
@@ -565,7 +574,34 @@ pub(crate) fn read_fill<R: std::io::Read + ?Sized>(
 mod tests {
 
     use crate::c_types::*;
+    use crate::cs;
     use crate::wrappers::*;
+
+    /// A byte such as 0xB2 is numeric to `char::is_numeric` (superscript two in
+    /// Latin-1) but is not UTF-8 by itself; it used to reach `from_utf8(..).unwrap()`.
+    #[test]
+    fn test_strtol_non_ascii_is_an_error_not_a_panic() {
+        for input in [&b"\xb2\0"[..], b"  \xb2\xb3\0", b"7\xb2\0", b"\0", b""] {
+            let s: &[c_char] = bytemuck::cast_slice(input);
+            let _ = strtol_safe::<c_long>(s);
+        }
+        let s: &[c_char] = bytemuck::cast_slice(b"\xb2\0");
+        assert!(strtol_safe::<c_long>(s).is_err());
+        let s: &[c_char] = bytemuck::cast_slice(b"7\xb2\0");
+        assert_eq!(strtol_safe::<c_long>(s).unwrap(), (7, 1));
+    }
+
+    /// C's strncat would write past the destination; this truncates instead.
+    #[test]
+    fn test_strncat_truncates_at_the_destination() {
+        let mut dst = [0 as c_char; 8];
+        strcpy_safe(&mut dst, cs!(c"abcde"));
+        strncat_safe(&mut dst, cs!(c"0123456789"), 30);
+        assert_eq!(&dst, bytemuck::cast_slice::<u8, c_char>(b"abcde01\0"));
+        // A full buffer takes nothing more, and keeps its terminator.
+        strncat_safe(&mut dst, cs!(c"x"), 1);
+        assert_eq!(&dst, bytemuck::cast_slice::<u8, c_char>(b"abcde01\0"));
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)]

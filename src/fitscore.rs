@@ -3793,15 +3793,18 @@ pub fn ffbnfm_safe(
             iread = unsafe { sscanf_ld(&temp[(fi + 1)..], cs!(c"%ld"), &mut width) };
             */
 
-            let tmp: Result<c_long, ParseIntError> =
-                atoi(str::from_utf8(cast_slice(&temp[(fi + 1)..])).unwrap());
+            /* only the string itself: bytes after its terminator are left over */
+            /* from the header, and need not be text */
+            let rest: &[u8] = cast_slice(&temp[(fi + 1)..]);
+            let rest = &rest[..rest.iter().position(|&c| c == 0).unwrap_or(rest.len())];
+            let tmp: Option<c_long> = str::from_utf8(rest).ok().and_then(|s| atoi(s).ok());
 
             match tmp {
-                Ok(x) => {
+                Some(x) => {
                     width = x;
                     iread = 1;
                 }
-                Err(_) => {
+                None => {
                     iread = 0;
                 }
             }
@@ -12946,10 +12949,11 @@ pub(crate) fn ffc2ujj(cval: &[c_char], ival: &mut ULONGLONG, status: &mut c_int)
     }
 
     let cval: &[u8] = cast_slice(cval);
+    /* an unterminated value, or one that is not text, is not a number either */
     let tmp_str = CStr::from_bytes_until_nul(cval)
-        .unwrap()
-        .to_str()
-        .unwrap()
+        .ok()
+        .and_then(|s| s.to_str().ok())
+        .unwrap_or("")
         .trim();
     let tmp = atoi::<ULONGLONG>(tmp_str);
 
@@ -13133,10 +13137,11 @@ pub(crate) fn ffc2rr(cval: &[c_char], fval: &mut f32, status: &mut c_int) -> c_i
         }
     }
 
+    /* an unterminated value, or one that is not text, is not a number either */
     let tmp: Result<f32, ParseFloatError> = CStr::from_bytes_until_nul(cast_slice(&tval[i..]))
-        .unwrap()
-        .to_str()
-        .unwrap()
+        .ok()
+        .and_then(|s| s.to_str().ok())
+        .unwrap_or("")
         .parse();
 
     match tmp {
@@ -13238,10 +13243,11 @@ pub(crate) fn ffc2dd(cval: &[c_char], dval: &mut f64, status: &mut c_int) -> c_i
         }
     }
 
+    /* an unterminated value, or one that is not text, is not a number either */
     let tmp: Result<f64, ParseFloatError> = CStr::from_bytes_until_nul(cast_slice(&tval[i..]))
-        .unwrap()
-        .to_str()
-        .unwrap()
+        .ok()
+        .and_then(|s| s.to_str().ok())
+        .unwrap_or("")
         .parse();
 
     match tmp {
