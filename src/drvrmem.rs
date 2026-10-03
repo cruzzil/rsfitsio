@@ -238,7 +238,8 @@ pub(crate) fn mem_create_comp_unsafe(
                 .to_str()
                 .unwrap();
 
-            if let Ok(_exists) = std::fs::exists(filename_str) {
+            /* does file already exist? */
+            if let Ok(true) = std::fs::exists(filename_str) {
                 return FILE_NOT_CREATED;
             }
 
