@@ -8038,27 +8038,26 @@ fn imcomp_copy_prime2img(
 }
 
 /// Whether a variable-length array descriptor (`nelem` elements of `elsize` bytes
-/// at heap `offset`) lies inside the table's heap.
+/// at heap `offset`) lies inside the file.
 ///
 /// Not checked in CFITSIO, which allocates for the length a descriptor states and
-/// only then fails to read it. A corrupt descriptor can state any length, so the
-/// tile code checks it first rather than allocate gigabytes for a short file.
-fn descriptor_in_heap(
+/// only then reads it. A descriptor that runs past the heap but not past the end
+/// of the file reads whatever follows, as in CFITSIO. One that runs past the end
+/// of the file fails the read there (END_OF_FILE or READ_ERROR); the tile code
+/// refuses it first instead, rather than allocate gigabytes for a short file.
+fn descriptor_in_file(
     fptr: &fitsfile,
     nelem: LONGLONG,
     offset: LONGLONG,
     elsize: LONGLONG,
 ) -> bool {
     let f = &fptr.Fptr;
-    let data_end = f
-        .rowlength
-        .checked_mul(f.numrows)
-        .and_then(|t| t.checked_add(f.heapsize));
     let end = nelem
         .checked_mul(elsize)
         .and_then(|n| n.checked_add(offset))
-        .and_then(|n| n.checked_add(f.heapstart));
-    nelem >= 0 && offset >= 0 && matches!((end, data_end), (Some(e), Some(d)) if e <= d)
+        .and_then(|n| n.checked_add(f.heapstart))
+        .and_then(|n| n.checked_add(f.datastart));
+    nelem >= 0 && offset >= 0 && matches!(end, Some(e) if e <= f.logfilesize)
 }
 
 /// This routine decompresses one tile of the image
@@ -8214,8 +8213,8 @@ fn imcomp_decompress_tile(
     } else {
         1
     };
-    if *status <= 0 && !descriptor_in_heap(infptr, nelemll, offset, elsize) {
-        ffpmsg_str("compressed tile descriptor points outside the heap (imcomp_decompress_tile)");
+    if *status <= 0 && !descriptor_in_file(infptr, nelemll, offset, elsize) {
+        ffpmsg_str("tile descriptor points past end of file (imcomp_decompress_tile)");
         *status = DATA_DECOMPRESSION_ERR;
         return *status;
     }
@@ -8251,7 +8250,7 @@ fn imcomp_decompress_tile(
             /* no more of them than the tile has pixels */
             if *status <= 0
                 && (nelemll > LONGLONG::from(tilelen)
-                    || !descriptor_in_heap(infptr, nelemll, offset, 1))
+                    || !descriptor_in_file(infptr, nelemll, offset, 1))
             {
                 ffpmsg_str("uncompressed tile descriptor is inconsistent (imcomp_decompress_tile)");
                 *status = DATA_DECOMPRESSION_ERR;
@@ -8306,9 +8305,9 @@ fn imcomp_decompress_tile(
                 *status = NO_COMPRESSED_TILE;
                 return *status;
             }
-            if *status <= 0 && !descriptor_in_heap(infptr, nelemll, offset, 1) {
+            if *status <= 0 && !descriptor_in_file(infptr, nelemll, offset, 1) {
                 ffpmsg_str(
-                    "gzipped tile descriptor points outside the heap (imcomp_decompress_tile)",
+                    "gzipped tile descriptor points past end of file (imcomp_decompress_tile)",
                 );
                 *status = DATA_DECOMPRESSION_ERR;
                 return *status;

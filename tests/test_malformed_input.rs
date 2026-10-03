@@ -12,8 +12,8 @@ mod tests {
     use libc::{c_int, c_long};
     use rsfitsio::aliases::rust_api::*;
     use rsfitsio::fitsio::{
-        BAD_C2D, BAD_C2F, BAD_C2I, DATA_DECOMPRESSION_ERR, GZIP_1, HCOMPRESS_1, LONGLONG, READONLY,
-        RICE_1, SHORT_IMG, ULONGLONG, fitsfile,
+        BAD_C2D, BAD_C2F, BAD_C2I, DATA_DECOMPRESSION_ERR, GZIP_1, HCOMPRESS_1, LONGLONG,
+        NUM_OVERFLOW, READONLY, RICE_1, SHORT_IMG, ULONGLONG, fitsfile,
     };
     use rsfitsio::imcompress::fits_set_compression_type_safe;
     use std::ffi::CString;
@@ -80,10 +80,10 @@ mod tests {
             assert_eq!(st, BAD_C2I);
             let (mut j, mut st): (LONGLONG, c_int) = (0, 0);
             fits_read_key_lnglng(f, cast_slice(b"LLKEY\0"), &mut j, None, &mut st);
-            assert_ne!(st, 0);
+            assert_eq!(st, NUM_OVERFLOW); /* as CFITSIO */
             let (mut l, mut st): (c_long, c_int) = (0, 0);
             fits_read_key_lng(f, cast_slice(b"LLKEY\0"), &mut l, None, &mut st);
-            assert_ne!(st, 0);
+            assert_eq!(st, NUM_OVERFLOW);
 
             fits_close_file(fptr.take().unwrap(), &mut status);
         });
@@ -115,8 +115,8 @@ mod tests {
             open(name, &mut fptr, &mut status);
             let f = fptr.as_mut().unwrap();
             fits_movabs_hdu(f, 2, None, &mut status);
-            // Reaching here is the test: the width is ignored, as an unreadable
-            // `w` is in CFITSIO.
+            // The width is ignored, as an unreadable `w` is in CFITSIO.
+            assert_eq!(status, 0);
             let mut st = 0;
             fits_close_file(fptr.take().unwrap(), &mut st);
         });
@@ -151,6 +151,23 @@ mod tests {
         bytes[at..at + card.len()].copy_from_slice(card.as_bytes());
     }
 
+    /// Offset of the compressed table's data, whose first row starts with the
+    /// COMPRESSED_DATA descriptor (1PB: i32 count, i32 offset).
+    fn first_descriptor(bytes: &[u8]) -> usize {
+        let hdr2 = bytes
+            .chunks(80)
+            .position(|c| c.starts_with(b"XTENSION"))
+            .unwrap()
+            * 80;
+        let end = hdr2
+            + bytes[hdr2..]
+                .chunks(80)
+                .position(|c| c.starts_with(b"END     "))
+                .unwrap()
+                * 80;
+        end.div_ceil(2880) * 2880
+    }
+
     /// Read the compressed image back, expecting an error status.
     fn read_back_fails(name: &str, bytes: &[u8]) {
         std::fs::write(name, bytes).unwrap();
@@ -175,18 +192,7 @@ mod tests {
         for case in ["truncated", "corrupt"] {
             with_temp_file(|name| {
                 let mut bytes = compressed_short_image(name, GZIP_1);
-                let hdr2 = bytes
-                    .chunks(80)
-                    .position(|c| c.starts_with(b"XTENSION"))
-                    .unwrap()
-                    * 80;
-                let end = hdr2
-                    + bytes[hdr2..]
-                        .chunks(80)
-                        .position(|c| c.starts_with(b"END     "))
-                        .unwrap()
-                        * 80;
-                let data = end.div_ceil(2880) * 2880;
+                let data = first_descriptor(&bytes);
                 if case == "truncated" {
                     // Halve the first tile's COMPRESSED_DATA descriptor count.
                     let n = i32::from_be_bytes(bytes[data..data + 4].try_into().unwrap());
@@ -218,24 +224,30 @@ mod tests {
     }
 
     /// A RICE tile whose BYTEPIX disagrees with ZBITPIX: the tile buffer is sized
-    /// for one and the decoder asserted it was exactly the other.
+    /// for one and the decoder asserted it was exactly the other. The decoder
+    /// follows BYTEPIX, so the tile decodes, as in CFITSIO.
     #[test]
     fn test_rice_bytepix_inconsistent_with_zbitpix() {
-        with_temp_file(|name| {
-            let mut bytes = compressed_short_image(name, RICE_1);
-            set_card(&mut bytes, "ZBITPIX", "32");
-            // Decoding garbage may still fail later; what matters is no panic.
-            std::fs::write(name, &bytes).unwrap();
-            let mut fptr: Option<Box<fitsfile>> = None;
-            let mut status: c_int = 0;
-            open(name, &mut fptr, &mut status);
-            let f = fptr.as_mut().unwrap();
-            fits_movabs_hdu(f, 2, None, &mut status);
-            let mut out = vec![0f32; 128];
-            fits_read_img_flt(f, 1, 1, 128, 0.0, &mut out, None, &mut status);
-            let mut st = 0;
-            fits_close_file(fptr.take().unwrap(), &mut st);
-        });
+        for zbitpix in ["32", "8"] {
+            with_temp_file(|name| {
+                let mut bytes = compressed_short_image(name, RICE_1);
+                set_card(&mut bytes, "ZBITPIX", zbitpix);
+                std::fs::write(name, &bytes).unwrap();
+                let mut fptr: Option<Box<fitsfile>> = None;
+                let mut status: c_int = 0;
+                open(name, &mut fptr, &mut status);
+                let f = fptr.as_mut().unwrap();
+                fits_movabs_hdu(f, 2, None, &mut status);
+                let mut out = vec![0f32; 128];
+                fits_read_img_flt(f, 1, 1, 128, 0.0, &mut out, None, &mut status);
+                assert_eq!(status, 0, "ZBITPIX = {zbitpix}");
+                for (i, v) in out.iter().enumerate() {
+                    assert_eq!(*v, (i * 37 % 1000) as f32, "ZBITPIX = {zbitpix}: pixel {i}");
+                }
+                let mut st = 0;
+                fits_close_file(fptr.take().unwrap(), &mut st);
+            });
+        }
     }
 
     /// Tile and image sizes that make the expected row count zero, and the
@@ -266,26 +278,14 @@ mod tests {
         }
     }
 
-    /// A tile descriptor claiming far more bytes than the heap holds: refused
-    /// before the tile buffer is allocated for it.
+    /// A tile descriptor claiming more bytes than the file holds: refused
+    /// before the tile buffer is allocated for it. (CFITSIO allocates the stated
+    /// length, then fails the read with END_OF_FILE or READ_ERROR.)
     #[test]
-    fn test_tile_descriptor_outside_the_heap() {
+    fn test_tile_descriptor_past_end_of_file() {
         with_temp_file(|name| {
             let mut bytes = compressed_short_image(name, RICE_1);
-            // The table's data follows the second header; its first row starts
-            // with the COMPRESSED_DATA descriptor (1PB: i32 count, i32 offset).
-            let hdr2 = bytes
-                .chunks(80)
-                .position(|c| c.starts_with(b"XTENSION"))
-                .unwrap()
-                * 80;
-            let end = hdr2
-                + bytes[hdr2..]
-                    .chunks(80)
-                    .position(|c| c.starts_with(b"END     "))
-                    .unwrap()
-                    * 80;
-            let data = end.div_ceil(2880) * 2880;
+            let data = first_descriptor(&bytes);
             bytes[data..data + 4].copy_from_slice(&0x3fff_ffffi32.to_be_bytes());
             read_back_fails(name, &bytes);
 
@@ -299,9 +299,36 @@ mod tests {
                 messages.push(String::from_utf8_lossy(&bytes[..end]).into_owned());
             }
             assert!(
-                messages.iter().any(|m| m.contains("outside the heap")),
+                messages.iter().any(|m| m.contains("past end of file")),
                 "{messages:?}"
             );
+        });
+    }
+
+    /// A tile descriptor that runs past the heap but not past the end of the
+    /// file: CFITSIO reads the bytes that follow, and the RICE decoder ignores
+    /// them, so the tile decodes.
+    #[test]
+    fn test_tile_descriptor_past_heap_inside_file() {
+        with_temp_file(|name| {
+            let mut bytes = compressed_short_image(name, RICE_1);
+            let data = first_descriptor(&bytes);
+            assert!(data + 64 + 1500 <= bytes.len());
+            bytes[data..data + 4].copy_from_slice(&1500i32.to_be_bytes());
+            std::fs::write(name, &bytes).unwrap();
+
+            let mut fptr: Option<Box<fitsfile>> = None;
+            let mut status: c_int = 0;
+            open(name, &mut fptr, &mut status);
+            let f = fptr.as_mut().unwrap();
+            fits_movabs_hdu(f, 2, None, &mut status);
+            let mut out = vec![0f32; 128];
+            fits_read_img_flt(f, 1, 1, 128, 0.0, &mut out, None, &mut status);
+            assert_eq!(status, 0);
+            for (i, v) in out.iter().enumerate() {
+                assert_eq!(*v, (i * 37 % 1000) as f32, "pixel {i}");
+            }
+            fits_close_file(fptr.take().unwrap(), &mut status);
         });
     }
 
