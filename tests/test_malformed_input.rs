@@ -279,29 +279,29 @@ mod tests {
     }
 
     /// A tile descriptor claiming more bytes than the file holds: refused
-    /// before the tile buffer is allocated for it. (CFITSIO allocates the stated
-    /// length, then fails the read with END_OF_FILE or READ_ERROR.)
+    /// before the tile buffer is allocated for it. CFITSIO allocates the stated
+    /// length, then fails the read with END_OF_FILE or READ_ERROR, so
+    /// DATA_DECOMPRESSION_ERR shows it was refused by the descriptor check.
+    /// (Its message is not checked: the error stack is shared by the tests
+    /// running in parallel.)
     #[test]
     fn test_tile_descriptor_past_end_of_file() {
         with_temp_file(|name| {
             let mut bytes = compressed_short_image(name, RICE_1);
             let data = first_descriptor(&bytes);
             bytes[data..data + 4].copy_from_slice(&0x3fff_ffffi32.to_be_bytes());
-            read_back_fails(name, &bytes);
+            std::fs::write(name, &bytes).unwrap();
 
-            // Refused for the right reason, rather than after allocating a
-            // gigabyte and failing to fill it.
-            let mut messages = Vec::new();
-            let mut msg = [0 as libc::c_char; rsfitsio::fitsio::FLEN_ERRMSG];
-            while fits_read_errmsg(&mut msg) != 0 {
-                let bytes: &[u8] = cast_slice(&msg);
-                let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-                messages.push(String::from_utf8_lossy(&bytes[..end]).into_owned());
-            }
-            assert!(
-                messages.iter().any(|m| m.contains("past end of file")),
-                "{messages:?}"
-            );
+            let mut fptr: Option<Box<fitsfile>> = None;
+            let mut status: c_int = 0;
+            open(name, &mut fptr, &mut status);
+            let f = fptr.as_mut().unwrap();
+            fits_movabs_hdu(f, 2, None, &mut status);
+            let mut out = vec![0f32; 128];
+            fits_read_img_flt(f, 1, 1, 128, 0.0, &mut out, None, &mut status);
+            assert_eq!(status, DATA_DECOMPRESSION_ERR);
+            let mut st = 0;
+            fits_close_file(fptr.take().unwrap(), &mut st);
         });
     }
 
