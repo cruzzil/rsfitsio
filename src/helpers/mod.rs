@@ -8,6 +8,7 @@
 pub mod aligned;
 pub mod boxed;
 pub mod cfile;
+pub(crate) mod outbuf;
 #[cfg(test)]
 pub mod testhelpers;
 pub mod vec_raw_parts;

@@ -9,16 +9,16 @@
 use bytemuck::{cast_slice, cast_slice_mut};
 
 use crate::{
-    c_types::{FILE, c_char, c_int, c_long, c_uchar, c_uint, c_ulong, c_ushort, c_void},
+    c_types::{FILE, c_char, c_int, c_long, c_uchar, c_uint, c_ulong, c_ushort},
     helpers::cfile::CFile,
 };
-use core::slice;
 use libc::EOF;
 use std::io::{Read, Write};
 
 use crate::{
     fitscore::{ffpmsg_slice, ffpmsg_str},
     fitsio::DATA_DECOMPRESSION_ERR,
+    helpers::outbuf::OutBuf,
     wrappers::strncat_safe,
 };
 
@@ -91,12 +91,9 @@ struct LZW_Compress<'a> {
     ifd: *mut FILE,
     /// Output file descriptor.
     ofd: *mut FILE,
-    /// Memory location for the uncompressed file.
-    memptr: *mut *mut c_void,
-    /// Size in bytes of the memory allocated for the file.
-    memsize: &'a mut usize,
-    /// Reallocation function used to grow that memory.
-    realloc_fn: Option<unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void>,
+    /// Memory for the uncompressed file, and how to grow it (the C's
+    /// `memptr`, `memsize` and `realloc_fn`); `None` writes to `ofd`.
+    out: Option<OutBuf<'a>>,
     /// Valid bytes in `inbuf`.
     insize: usize,
     /// Index of the next byte to be processed in `inbuf`.
@@ -159,36 +156,30 @@ impl<'a> LZW_Compress<'a> {
 
     /* =========================================================================== */
     ///  copy buffer into memory; allocate more memory if required
-    unsafe fn write_buf(&mut self, cnt: usize) {
-        unsafe {
-            let buf = &mut self.outbuf[..];
-            if let Some(realloc_fn) = self.realloc_fn {
-                /* get more memory if current buffer is too small */
-                if self.bytes_out + cnt > *self.memsize {
-                    *self.memptr = realloc_fn(*self.memptr, self.bytes_out + cnt);
-                    *self.memsize = self.bytes_out + cnt; /* new memory buffer size */
-
-                    if self.memptr.is_null() {
-                        self.error("malloc failed while uncompressing (write_buf)");
-                        self.exit_code = ERROR;
-                        return;
-                    }
-                }
-                /* copy into memory buffer */
-                let tmp_slice =
-                    slice::from_raw_parts_mut((*self.memptr).add(self.bytes_out).cast::<u8>(), cnt);
-                tmp_slice.copy_from_slice(&buf[..cnt]);
-            } else {
-                /* append buffer to file */
-
-                let mut cfile = CFile::from(self.ofd);
-
-                let last_write_len = cfile.write(&buf[..cnt]);
-
-                if last_write_len.is_err() || last_write_len.unwrap() != cnt {
-                    self.error("failed to write buffer to uncompressed output file (write_buf)");
+    fn write_buf(&mut self, cnt: usize) {
+        let buf = &self.outbuf[..cnt];
+        if let Some(out) = self.out.as_mut() {
+            /* get more memory if current buffer is too small */
+            if self.bytes_out + cnt > out.len() {
+                /* *memptr = realloc_fn(*memptr, bytes_out + cnt); */
+                if !out.try_resize(self.bytes_out + cnt) {
+                    self.error("malloc failed while uncompressing (write_buf)");
                     self.exit_code = ERROR;
+                    return;
                 }
+            }
+            /* copy into memory buffer */
+            out.as_mut_slice()[self.bytes_out..self.bytes_out + cnt].copy_from_slice(buf);
+        } else {
+            /* append buffer to file */
+
+            let mut cfile = CFile::from(self.ofd);
+
+            let last_write_len = cfile.write(buf);
+
+            if last_write_len.is_err() || last_write_len.unwrap() != cnt {
+                self.error("failed to write buffer to uncompressed output file (write_buf)");
+                self.exit_code = ERROR;
             }
         }
     }
@@ -209,17 +200,14 @@ impl<'a> LZW_Compress<'a> {
 ///
 /// * `filename`    — name of input file
 /// * `indiskfile`  — (I) file pointer
-/// * `buffptr`     — (IO) memory pointer
-/// * `buffsize`    — (IO) size of buffer, in bytes
-/// * `mem_realloc` — function
+/// * `out`         — (IO) memory buffer, and whether it may grow (the C's
+///   `buffptr`, `buffsize` and `mem_realloc`)
 /// * `filesize`    — (O) size of file, in bytes
 /// * `status`      — (IO) error status
 pub(crate) fn zuncompress2mem(
     filename: &[c_char],
     indiskfile: *mut FILE,
-    buffptr: *mut *mut u8,
-    buffsize: &mut usize,
-    mem_realloc: Option<unsafe extern "C" fn(p: *mut c_void, newsize: usize) -> *mut c_void>,
+    out: OutBuf<'_>,
     filesize: &mut usize,
     status: &mut c_int,
 ) -> c_int {
@@ -247,9 +235,7 @@ pub(crate) fn zuncompress2mem(
         ifname: fn_buffer,
         ifd: indiskfile,
         ofd: core::ptr::null_mut(),
-        memptr: buffptr.cast::<*mut c_void>(),
-        memsize: buffsize,
-        realloc_fn: mem_realloc,
+        out: Some(out),
         insize: 0,
         inptr: 0,
         block_mode: BLOCK_MODE,
@@ -438,9 +424,7 @@ fn unlzw(lzw: &mut LZW_Compress, in_file: *mut FILE, out_file: *mut FILE) -> c_i
                 /* Special case for KwKwK string. */
                 if code > free_ent {
                     if outpos > 0 {
-                        unsafe {
-                            lzw.write_buf(outpos as usize);
-                        }
+                        lzw.write_buf(outpos as usize);
                         lzw.bytes_out += outpos as usize;
                     }
                     lzw.error("corrupt input.");
@@ -487,9 +471,7 @@ fn unlzw(lzw: &mut LZW_Compress, in_file: *mut FILE, out_file: *mut FILE) -> c_i
                         }
 
                         if outpos >= OUTBUFSIZ as c_int {
-                            unsafe {
-                                lzw.write_buf(outpos as usize);
-                            }
+                            lzw.write_buf(outpos as usize);
                             lzw.bytes_out += outpos as usize;
                             outpos = 0;
                         }
@@ -527,7 +509,7 @@ fn unlzw(lzw: &mut LZW_Compress, in_file: *mut FILE, out_file: *mut FILE) -> c_i
     }
 
     if outpos > 0 {
-        unsafe { lzw.write_buf(outpos as usize) };
+        lzw.write_buf(outpos as usize);
         lzw.bytes_out += outpos as usize;
     }
 
@@ -542,7 +524,9 @@ mod tests {
 
     use crate::c_types::{c_char, c_int};
     use bytemuck::cast_slice;
-    use libc::{fdopen, realloc};
+    use libc::fdopen;
+
+    use crate::helpers::outbuf::OutBuf;
 
     use crate::zuncompress::zuncompress2mem;
 
@@ -577,9 +561,8 @@ mod tests {
             }
         };
 
-        // Prepare buffers and variables for decompression
-        let mut decompressed_buffer: Vec<u8> = vec![0; 1024 * 1024 * 1024];
-        let mut buffer_size: usize = 1024 * 1024 * 1024;
+        // Start empty, so the output has to grow
+        let mut decompressed_buffer: Vec<u8> = Vec::new();
         let mut decompressed_size: usize = 0;
         let mut status: c_int = 0;
 
@@ -591,9 +574,7 @@ mod tests {
                     .as_bytes_with_nul(),
             ),
             compressed_file_ptr,
-            &mut decompressed_buffer.as_mut_ptr(),
-            &mut buffer_size,
-            Some(realloc),
+            OutBuf::Vec(&mut decompressed_buffer),
             &mut decompressed_size,
             &mut status,
         );
@@ -609,6 +590,7 @@ mod tests {
             .expect("Failed to read expected file");
 
         // Compare the decompressed content with the expected content
+        assert_eq!(decompressed_buffer.len(), decompressed_size);
         assert_eq!(
             &decompressed_buffer[..decompressed_size],
             &expected_content,
