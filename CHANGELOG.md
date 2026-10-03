@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.470.4] - 2026.10.04
+
+### Fixed
+- Decompression buffers grow as in CFITSIO instead of panicking with "Realloc function
+  not implemented": GZIP tiles holding wider pixels than ZBITPIX decode, a compressed
+  table VLA longer than its descriptor is written whole, `.gz` files whose ISIZE trailer
+  understates the size open, and `ffimem` buffers grow through the caller's realloc
+  (#139).
+- Driver-allocated memory files are no longer passed to libc `realloc` when reading
+  `.Z` files or stdin, or when shrinking after opening a compressed file.
+- `.gz` output files can be created again; any compressed output name failed with
+  `FILE_NOT_CREATED`.
+- Malformed input returns a CFITSIO status instead of panicking or dividing by zero:
+  non-UTF-8 keyword and TFORM values, RICE tiles whose BYTEPIX disagrees with ZBITPIX,
+  tile descriptors past the end of the file, non-positive ZTILEn/ZNAXISn, and HCOMPRESS
+  tiles with a short header or zero size (#139).
+- Tile descriptors that run past the heap but stay inside the file are read, as in
+  CFITSIO, rather than refused.
+
 ## [0.470.3] - 2026.09.28
 
 ### Changed
