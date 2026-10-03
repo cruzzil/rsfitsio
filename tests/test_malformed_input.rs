@@ -12,8 +12,8 @@ mod tests {
     use libc::{c_int, c_long};
     use rsfitsio::aliases::rust_api::*;
     use rsfitsio::fitsio::{
-        BAD_C2D, BAD_C2F, BAD_C2I, GZIP_1, HCOMPRESS_1, LONGLONG, READONLY, RICE_1, SHORT_IMG,
-        ULONGLONG, fitsfile,
+        BAD_C2D, BAD_C2F, BAD_C2I, DATA_DECOMPRESSION_ERR, GZIP_1, HCOMPRESS_1, LONGLONG, READONLY,
+        RICE_1, SHORT_IMG, ULONGLONG, fitsfile,
     };
     use rsfitsio::imcompress::fits_set_compression_type_safe;
     use std::ffi::CString;
@@ -166,16 +166,55 @@ mod tests {
         fits_close_file(fptr.take().unwrap(), &mut st);
     }
 
-    /// A GZIP tile that inflates to more than ZBITPIX allows. The decompressor
-    /// used to be handed C `realloc` for a Rust-owned buffer and panicked rather
-    /// than call it.
+    /// A GZIP tile whose stream is cut short or corrupt. The tile buffer can
+    /// grow, and a truncated stream asks for more output space forever: CFITSIO
+    /// reallocs until realloc fails, then returns DATA_DECOMPRESSION_ERR, which
+    /// rsfitsio returns as soon as the input is used up.
     #[test]
-    fn test_gzip_tile_larger_than_zbitpix() {
-        with_temp_file(|name| {
-            let mut bytes = compressed_short_image(name, GZIP_1);
-            set_card(&mut bytes, "ZBITPIX", "8");
-            read_back_fails(name, &bytes);
-        });
+    fn test_truncated_or_corrupt_gzip_tile() {
+        for case in ["truncated", "corrupt"] {
+            with_temp_file(|name| {
+                let mut bytes = compressed_short_image(name, GZIP_1);
+                let hdr2 = bytes
+                    .chunks(80)
+                    .position(|c| c.starts_with(b"XTENSION"))
+                    .unwrap()
+                    * 80;
+                let end = hdr2
+                    + bytes[hdr2..]
+                        .chunks(80)
+                        .position(|c| c.starts_with(b"END     "))
+                        .unwrap()
+                        * 80;
+                let data = end.div_ceil(2880) * 2880;
+                if case == "truncated" {
+                    // Halve the first tile's COMPRESSED_DATA descriptor count.
+                    let n = i32::from_be_bytes(bytes[data..data + 4].try_into().unwrap());
+                    bytes[data..data + 4].copy_from_slice(&(n / 2).to_be_bytes());
+                } else {
+                    // Scramble the deflate data after the 10-byte gzip header.
+                    let gz = data
+                        + bytes[data..]
+                            .windows(3)
+                            .position(|w| w == [0x1f, 0x8b, 0x08])
+                            .unwrap();
+                    for b in &mut bytes[gz + 12..gz + 40] {
+                        *b ^= 0x5a;
+                    }
+                }
+                std::fs::write(name, &bytes).unwrap();
+                let mut fptr: Option<Box<fitsfile>> = None;
+                let mut status: c_int = 0;
+                open(name, &mut fptr, &mut status);
+                let f = fptr.as_mut().unwrap();
+                fits_movabs_hdu(f, 2, None, &mut status);
+                let mut out = vec![0f32; 128];
+                fits_read_img_flt(f, 1, 1, 128, 0.0, &mut out, None, &mut status);
+                assert_eq!(status, DATA_DECOMPRESSION_ERR, "{case}");
+                let mut st = 0;
+                fits_close_file(fptr.take().unwrap(), &mut st);
+            });
+        }
     }
 
     /// A RICE tile whose BYTEPIX disagrees with ZBITPIX: the tile buffer is sized

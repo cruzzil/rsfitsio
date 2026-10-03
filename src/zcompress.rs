@@ -7,7 +7,7 @@
 use core::ptr;
 use std::io::{Read, Write};
 
-use crate::c_types::{c_char, c_int, c_uint, c_ulong, c_void};
+use crate::c_types::{c_char, c_int, c_uint, c_ulong};
 
 use libz_rs_sys::{
     Z_BEST_SPEED, Z_BUF_ERROR, Z_DEFAULT_STRATEGY, Z_DEFLATED, Z_FINISH, Z_NO_FLUSH, Z_OK,
@@ -16,6 +16,7 @@ use libz_rs_sys::{
 };
 
 use crate::fitsio::{DATA_COMPRESSION_ERR, DATA_DECOMPRESSION_ERR, MEMORY_ALLOCATION};
+use crate::helpers::outbuf::OutBuf;
 
 const GZBUFSIZE: usize = 115200; /* 40 FITS blocks */
 const BUFFINCR: usize = 28800; /* 10 FITS blocks */
@@ -57,21 +58,22 @@ pub(crate) unsafe fn deflateInit2(
 /// already been allocated, then realloc more memory, using the supplied
 /// input function, if necessary.
 ///
+/// The body is one `unsafe` block because zlib reads and writes through the
+/// `z_stream`'s raw `next_in`/`next_out` pointers.  They are only ever set
+/// from `filebuff` and from `out`, whose length bounds `avail_out`.
+///
 /// # Parameters
 ///
 /// * `_filename`   — name of input file
 /// * `diskfile`    — (I) file pointer
-/// * `buffptr`     — (IO) memory pointer
-/// * `buffsize`    — (IO) size of buffer, in bytes
-/// * `mem_realloc` — function
+/// * `out`         — (IO) memory buffer, and whether it may grow (the C's
+///   `buffptr`, `buffsize` and `mem_realloc`)
 /// * `filesize`    — (O) size of file, in bytes
 /// * `status`      — (IO) error status
-pub(crate) unsafe fn uncompress2mem<T: Read>(
+pub(crate) fn uncompress2mem<T: Read>(
     _filename: &[c_char],
     diskfile: &mut T,
-    buffptr: *mut *mut u8,
-    buffsize: &mut usize,
-    mem_realloc: Option<unsafe extern "C" fn(p: *mut c_void, newsize: usize) -> *mut c_void>,
+    mut out: OutBuf<'_>,
     filesize: &mut usize,
     status: &mut c_int,
 ) -> c_int {
@@ -84,12 +86,12 @@ pub(crate) unsafe fn uncompress2mem<T: Read>(
         (d_stream.avail_out is a uInt type, which might be smaller
         than buffsize's size_t type.)
         */
-        let nPages: libz_rs_sys::uLong = (*buffsize as uLong) / uLong::from(c_uint::MAX);
+        let nPages: libz_rs_sys::uLong = (out.len() as uLong) / uLong::from(c_uint::MAX);
         let mut iPage: uLong = 0;
         let outbuffsize: uInt = if nPages > 0 {
             c_uint::MAX
         } else {
-            *buffsize as uInt
+            out.len() as uInt
         };
 
         if *status > 0 {
@@ -109,7 +111,7 @@ pub(crate) unsafe fn uncompress2mem<T: Read>(
             next_in: ptr::null_mut(),
             avail_in: Default::default(),
             total_in: Default::default(),
-            next_out: *buffptr,
+            next_out: out.as_mut_ptr(),
             avail_out: outbuffsize,
             total_out: Default::default(),
             msg: ptr::null_mut(),
@@ -167,27 +169,26 @@ pub(crate) unsafe fn uncompress2mem<T: Read>(
                     /* First check if more memory is available above the 4Gb limit in the originally input buffptr array */
                     if iPage < nPages {
                         iPage += 1;
-                        d_stream.next_out =
-                            (*buffptr).add((iPage * uLong::from(c_uint::MAX)) as usize);
+                        d_stream.next_out = out
+                            .as_mut_ptr()
+                            .add((iPage * uLong::from(c_uint::MAX)) as usize);
                         if iPage < nPages {
                             d_stream.avail_out = c_uint::MAX;
                         } else {
                             d_stream.avail_out =
-                                ((*buffsize as uLong) % uLong::from(c_uint::MAX)) as uInt;
+                                ((out.len() as uLong) % uLong::from(c_uint::MAX)) as uInt;
                         }
-                    } else if let Some(mem_realloc) = mem_realloc {
-                        panic!("Realloc function not implemented for uncompress2mem");
-                        *buffptr =
-                            mem_realloc((*buffptr).cast::<c_void>(), *buffsize + BUFFINCR).cast();
-                        if (*buffptr).is_null() {
+                    } else if out.can_grow() {
+                        /* *buffptr = mem_realloc(*buffptr,*buffsize + BUFFINCR); */
+                        let buffsize = out.len();
+                        if !out.try_resize(buffsize + BUFFINCR) {
                             inflateEnd(&raw mut d_stream);
                             *status = DATA_DECOMPRESSION_ERR;
                             return *status; /* memory allocation failed */
                         }
 
                         d_stream.avail_out = BUFFINCR as uInt;
-                        d_stream.next_out = (*buffptr).add(*buffsize);
-                        *buffsize += BUFFINCR;
+                        d_stream.next_out = out.as_mut_ptr().add(buffsize);
                     } else {
                         /* error: no realloc function available */
                         inflateEnd(&raw mut d_stream);
@@ -237,21 +238,22 @@ pub(crate) unsafe fn uncompress2mem<T: Read>(
 /// already been allocated, then realloc more memory, using the supplied
 /// input function, if necessary.
 ///
+/// The body is one `unsafe` block because zlib reads and writes through the
+/// `z_stream`'s raw `next_in`/`next_out` pointers.  They are only ever set
+/// from `inmemptr` and from `out`, whose length bounds `avail_out`.
+///
 /// # Parameters
 ///
 /// * `inmemptr`    — (I) memory pointer to compressed bytes
 /// * `inmemsize`   — (I) size of input compressed file
-/// * `buffptr`     — (IO) memory pointer
-/// * `buffsize`    — (IO) size of buffer, in bytes
-/// * `mem_realloc` — function
+/// * `out`         — (IO) memory buffer, and whether it may grow (the C's
+///   `buffptr`, `buffsize` and `mem_realloc`)
 /// * `filesize`    — (O) size of file, in bytes
 /// * `status`      — (IO) error status
-pub(crate) unsafe fn uncompress2mem_from_mem(
+pub(crate) fn uncompress2mem_from_mem(
     inmemptr: &[c_char],
     inmemsize: usize,
-    buffptr: *mut *mut u8,
-    buffsize: &mut usize,
-    mem_realloc: Option<unsafe extern "C" fn(p: *mut c_void, newsize: usize) -> *mut c_void>,
+    mut out: OutBuf<'_>,
     filesize: Option<&mut usize>,
     status: &mut c_int,
 ) -> c_int {
@@ -262,6 +264,9 @@ pub(crate) unsafe fn uncompress2mem_from_mem(
         if *status > 0 {
             return *status;
         }
+
+        /* zlib must not read past the input slice */
+        let inmemsize = inmemsize.min(inmemptr.len());
 
         d_stream = z_stream {
             next_in: ptr::null_mut(),
@@ -292,45 +297,58 @@ pub(crate) unsafe fn uncompress2mem_from_mem(
         d_stream.next_in = inmemptr.as_ptr() as *mut u8; // Yes convert from const to mut
         d_stream.avail_in = inmemsize as uInt;
 
-        d_stream.next_out = *buffptr;
-        d_stream.avail_out = *buffsize as uInt;
+        d_stream.next_out = out.as_mut_ptr();
+        /* the C truncates *buffsize to uInt; clamp so a buffer over 4 GB is
+        not mistaken for a tiny one */
+        d_stream.avail_out = out.len().min(uInt::MAX as usize) as uInt;
 
-        /* uncompress as much of the input as will fit in the output */
-        err = inflate(&raw mut d_stream, Z_NO_FLUSH);
+        loop {
+            /* uncompress as much of the input as will fit in the output */
+            err = inflate(&raw mut d_stream, Z_NO_FLUSH);
 
-        if err == Z_STREAM_END {
-            /* We reached the end of the input */
-            // Noop
-        } else if err == Z_OK || err == Z_BUF_ERROR {
-            /* need more space in output buffer */
-            /* Z_BUF_ERROR means need more input data to make progress */
+            if err == Z_STREAM_END {
+                /* We reached the end of the input */
+                break;
+            } else if err == Z_OK || err == Z_BUF_ERROR {
+                /* need more space in output buffer */
+                /* Z_BUF_ERROR means need more input data to make progress */
 
-            if let Some(mem_realloc) = mem_realloc {
-                panic!("Realloc function not implemented for uncompress2mem_from_mem");
-                *buffptr = mem_realloc((*buffptr).cast::<c_void>(), *buffsize + BUFFINCR).cast();
-                if (*buffptr).is_null() {
+                if out.can_grow() {
+                    /* All the input is consumed and there is still room for
+                    output, so the stream is truncated and more memory cannot
+                    help.  The C reallocs here until realloc fails, then returns
+                    the same status; stop now instead. */
+                    if d_stream.avail_in == 0 && d_stream.avail_out > 0 {
+                        inflateEnd(&raw mut d_stream);
+                        *status = DATA_DECOMPRESSION_ERR;
+                        return *status;
+                    }
+
+                    /* *buffptr = mem_realloc(*buffptr,*buffsize + BUFFINCR); */
+                    let buffsize = out.len();
+                    if !out.try_resize(buffsize + BUFFINCR) {
+                        inflateEnd(&raw mut d_stream);
+                        *status = DATA_DECOMPRESSION_ERR;
+                        return *status; /* memory allocation failed */
+                    }
+
+                    d_stream.avail_out = BUFFINCR as uInt;
+                    d_stream.next_out = out.as_mut_ptr().add(buffsize);
+                } else {
+                    /* error: no realloc function available */
                     inflateEnd(&raw mut d_stream);
+                    if let Some(filesize) = filesize {
+                        *filesize = d_stream.total_out as usize;
+                    }
                     *status = DATA_DECOMPRESSION_ERR;
-                    return *status; /* memory allocation failed */
+                    return *status;
                 }
-
-                d_stream.avail_out = BUFFINCR as uInt;
-                d_stream.next_out = (*buffptr).add(*buffsize);
-                *buffsize += BUFFINCR;
             } else {
-                /* error: no realloc function available */
+                /* some other error */
                 inflateEnd(&raw mut d_stream);
-                if let Some(filesize) = filesize {
-                    *filesize = d_stream.total_out as usize;
-                }
                 *status = DATA_DECOMPRESSION_ERR;
                 return *status;
             }
-        } else {
-            /* some other error */
-            inflateEnd(&raw mut d_stream);
-            *status = DATA_DECOMPRESSION_ERR;
-            return *status;
         }
 
         /* Set the output file size to be the total output data */

@@ -25,6 +25,7 @@ use std::sync::Mutex;
 
 use crate::c_types::{FILE, c_char, c_int, c_long, c_uchar, c_uint, c_ushort, c_void};
 use crate::helpers::cfile::CFile;
+use crate::helpers::outbuf::{GrowFn, OutBuf, RawBuf};
 use crate::helpers::vec_raw_parts::vec_into_raw_parts;
 use crate::zuncompress::zuncompress2mem;
 use libc::{EOF, fclose, fgetc, fopen, fread, memcmp, memcpy, memset, realloc, ungetc};
@@ -147,17 +148,26 @@ fn release_owned_cell(d: &mut memdriver) {
 ///
 /// Grows with zeroed bytes, matching what mem_truncate did by hand after
 /// calling realloc.
+///
+/// Like C realloc, a null `ptr` (a memory file created with size 0) makes a new
+/// allocation.
 unsafe fn owned_realloc(ptr: *mut c_char, newsize: usize) -> *mut c_char {
     unsafe {
         let mut allocations = ALLOCATIONS.lock().unwrap();
 
-        let Some((len, capacity)) = allocations.remove(&(ptr as usize)) else {
-            /* Not one of ours; refuse rather than free it with the wrong
-            allocator. */
-            return ptr::null_mut();
+        let mut v = if ptr.is_null() {
+            if newsize == 0 {
+                return ptr::null_mut();
+            }
+            Vec::new()
+        } else {
+            let Some((len, capacity)) = allocations.remove(&(ptr as usize)) else {
+                /* Not one of ours; refuse rather than free it with the wrong
+                allocator. */
+                return ptr::null_mut();
+            };
+            Vec::from_raw_parts(ptr, len, capacity)
         };
-
-        let mut v = Vec::from_raw_parts(ptr, len, capacity);
 
         if newsize > v.len() && v.try_reserve_exact(newsize - v.len()).is_err() {
             /* Put it back so the close path can still release it. */
@@ -171,6 +181,47 @@ unsafe fn owned_realloc(ptr: *mut c_char, newsize: usize) -> *mut c_char {
         let (p, l, c) = vec_into_raw_parts(v);
         allocations.insert(p as usize, (l, c));
         p
+    }
+}
+
+/// The realloc function for a slot's buffer: owned_realloc for a buffer the
+/// driver allocated, otherwise the caller's function, or None if it has none
+/// (the C's `memTable[hdl].mem_realloc`).
+fn slot_realloc(d: &memdriver) -> Option<impl FnMut(*mut u8, usize) -> *mut u8 + use<>> {
+    let owned = !d.owned_cell.is_null();
+    let user = d.mem_realloc;
+    if !owned && user.is_none() {
+        return None;
+    }
+    Some(move |p: *mut u8, newsize: usize| {
+        // SAFETY: only called through the slot's OutBuf, with the slot's own
+        // buffer; an owned buffer is the Vec owned_realloc expects, and a
+        // caller's buffer goes to the realloc the caller supplied for it.
+        unsafe {
+            if owned {
+                owned_realloc(p.cast(), newsize).cast()
+            } else {
+                (user.unwrap())(p.cast(), newsize).cast()
+            }
+        }
+    })
+}
+
+/// The slot's buffer as a decompression output, grown by `grow`.
+///
+/// # Safety
+///
+/// The slot must be open, so that `memaddrptr` and `memsizeptr` are valid and
+/// describe its buffer, and must stay open while the result is in use.
+unsafe fn slot_outbuf<'a>(d: &memdriver, grow: Option<GrowFn<'a>>) -> OutBuf<'a> {
+    // SAFETY: the caller's guarantee; the slot's address and size describe a
+    // live buffer, and grow is that buffer's realloc.
+    unsafe {
+        OutBuf::Raw(RawBuf::new(
+            &mut *d.memaddrptr.cast::<*mut u8>(),
+            &mut *d.memsizeptr,
+            grow,
+        ))
     }
 }
 
@@ -583,13 +634,18 @@ pub(crate) unsafe fn stdin2mem(hd: c_int) -> c_int {
 
         loop {
             /* allocate memory for another FITS block */
-            memptr = realloc(memptr.cast::<c_void>(), memsize + delta).cast::<c_char>();
+            /* realloc of our own Vec; see owned_realloc */
+            memptr = owned_realloc(memptr, memsize + delta);
 
             if memptr.is_null() {
                 ffpmsg_str("realloc failed while copying stdin (stdin2mem)");
                 return MEMORY_ALLOCATION;
             }
             memsize += delta;
+            /* keep the table current, so a later failure leaves it holding the
+            live buffer for mem_close_free */
+            *m[hd as usize].memaddrptr = memptr;
+            *m[hd as usize].memsizeptr = memsize;
 
             /* read another FITS block */
             nread = fread(memptr.add(filesize).cast::<c_void>(), 1, delta, STDIN!());
@@ -902,11 +958,11 @@ pub(crate) fn mem_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &mu
 
         /* if we allocated too much memory initially, then free it */
         if *(m[*hdl as usize].memsizeptr) > ((m[*hdl as usize].fitsfilesize as usize) + 256) {
-            let ptr = realloc(
-                (*(m[*hdl as usize].memaddrptr)).cast(),
+            /* realloc of our own Vec; see owned_realloc */
+            let ptr = owned_realloc(
+                *(m[*hdl as usize].memaddrptr),
                 m[*hdl as usize].fitsfilesize as usize,
-            )
-            .cast::<c_char>();
+            );
             if ptr.is_null() {
                 ffpmsg_str("Failed to reduce size of allocated memory (compress_open)");
                 return MEMORY_ALLOCATION;
@@ -960,11 +1016,11 @@ pub(crate) unsafe fn mem_compress_stdin_open(
 
         /* if we allocated too much memory initially, then free it */
         if *(m[*hdl as usize].memsizeptr) > ((m[*hdl as usize].fitsfilesize as usize) + 256) {
-            let ptr = realloc(
-                (*(m[*hdl as usize].memaddrptr)).cast::<c_void>(),
+            /* realloc of our own Vec; see owned_realloc */
+            let ptr = owned_realloc(
+                *(m[*hdl as usize].memaddrptr),
                 m[*hdl as usize].fitsfilesize as usize,
-            )
-            .cast::<c_char>();
+            );
             if ptr.is_null() {
                 ffpmsg_str("Failed to reduce size of allocated memory (compress_stdin_open)");
                 return MEMORY_ALLOCATION;
@@ -1297,12 +1353,13 @@ pub(crate) unsafe fn mem_uncompress2mem<T: Read + AsRawFd>(
                 fdopen(fd, c"rb".as_ptr().cast::<c_char>())
             };
 
+            /* the C passes realloc; the slot's buffer is our own Vec */
+            let mut grow = slot_realloc(&m[hdl as usize]);
             zuncompress2mem(
                 filename,
                 raw_file_handle,
-                m[hdl as usize].memaddrptr.cast::<*mut u8>(), /* pointer to memory address */
-                m[hdl as usize].memsizeptr.as_mut().unwrap(), /* pointer to size of memory */
-                Some(realloc),                                /* reallocation function */
+                /* pointer to memory address, size of memory, reallocation function */
+                slot_outbuf(&m[hdl as usize], grow.as_mut().map(|g| g as GrowFn)),
                 &mut finalsize,
                 &mut status, /* returned file size and status*/
             );
@@ -1325,12 +1382,13 @@ pub(crate) unsafe fn mem_uncompress2mem<T: Read + AsRawFd>(
                 m = MEM_TABLE.lock().unwrap();
             }
         } else {
+            /* the C passes realloc; the slot's buffer is our own Vec */
+            let mut grow = slot_realloc(&m[hdl as usize]);
             uncompress2mem(
                 filename,
                 diskfile,
-                m[hdl as usize].memaddrptr.cast::<*mut u8>(), /* pointer to memory address */
-                m[hdl as usize].memsizeptr.as_mut().expect(NULL_MSG), /* pointer to size of memory */
-                Some(realloc),                                        /* reallocation function */
+                /* pointer to memory address, size of memory, reallocation function */
+                slot_outbuf(&m[hdl as usize], grow.as_mut().map(|g| g as GrowFn)),
                 &mut finalsize,
                 &mut status,
             ); /* returned file size nd status*/
@@ -1366,12 +1424,13 @@ pub(crate) unsafe fn mem_uncompress2mem<T: Read + AsRawHandle>(
                 fdopen(fd, c"rb".as_ptr() as *const c_char)
             };
 
+            /* the C passes realloc; the slot's buffer is our own Vec */
+            let mut grow = slot_realloc(&m[hdl as usize]);
             zuncompress2mem(
                 filename,
                 raw_file_handle,
-                m[hdl as usize].memaddrptr as *mut *mut u8, /* pointer to memory address */
-                m[hdl as usize].memsizeptr.as_mut().unwrap(), /* pointer to size of memory */
-                Some(realloc),                              /* reallocation function */
+                /* pointer to memory address, size of memory, reallocation function */
+                slot_outbuf(&m[hdl as usize], grow.as_mut().map(|g| g as GrowFn)),
                 &mut finalsize,
                 &mut status, /* returned file size and status*/
             );
@@ -1389,12 +1448,13 @@ pub(crate) unsafe fn mem_uncompress2mem<T: Read + AsRawHandle>(
                 bzip2uncompress2mem(filename, raw_file_handle, hdl, &mut finalsize, &mut status);
             }
         } else {
+            /* the C passes realloc; the slot's buffer is our own Vec */
+            let mut grow = slot_realloc(&m[hdl as usize]);
             uncompress2mem(
                 filename,
                 diskfile,
-                m[hdl as usize].memaddrptr as *mut *mut u8, /* pointer to memory address */
-                m[hdl as usize].memsizeptr.as_mut().expect(NULL_MSG), /* pointer to size of memory */
-                Some(realloc),                                        /* reallocation function */
+                /* pointer to memory address, size of memory, reallocation function */
+                slot_outbuf(&m[hdl as usize], grow.as_mut().map(|g| g as GrowFn)),
                 &mut finalsize,
                 &mut status,
             ); /* returned file size nd status*/
@@ -1604,12 +1664,13 @@ pub(crate) unsafe fn mem_zuncompress_and_write(hdl: c_int, buffer: &[u8], nbytes
             return WRITE_ERROR;
         }
 
+        /* grows through memTable[hdl].mem_realloc: our own Vec, or the
+        caller's realloc for an ffimem buffer */
+        let mut grow = slot_realloc(&m[hdl as usize]);
         uncompress2mem_from_mem(
             cast_slice(buffer),
             nbytes,
-            m[hdl as usize].memaddrptr.cast::<*mut u8>(),
-            m[hdl as usize].memsizeptr.as_mut().expect(NULL_MSG),
-            m[hdl as usize].mem_realloc,
+            slot_outbuf(&m[hdl as usize], grow.as_mut().map(|g| g as GrowFn)),
             Some(&mut newsize),
             &mut status,
         );
@@ -1709,5 +1770,70 @@ pub(crate) unsafe fn bzip2uncompress2mem(
             return;
         }
         *filesize = total_read;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zcompress::compress2mem_from_mem;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// A caller's realloc, as passed to ffimem, that counts its calls.
+    unsafe extern "C" fn counting_realloc(p: *mut c_void, newsize: usize) -> *mut c_void {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        unsafe { libc::realloc(p, newsize) }
+    }
+
+    /// Gunzipping into a caller's memory file grows it with the caller's own
+    /// realloc function, by BUFFINCR steps as the C does.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_zuncompress_and_write_grows_with_the_callers_realloc() {
+        let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let mut gz = Vec::new();
+        let mut gzlen = 0;
+        let mut status = 0;
+        compress2mem_from_mem(
+            cast_slice(&data),
+            data.len(),
+            &mut gz,
+            Some(&mut gzlen),
+            &mut status,
+        );
+        assert_eq!(status, 0);
+
+        /* a C-allocated buffer, as an ffimem caller supplies */
+        let mut buff: *mut c_void = unsafe { libc::malloc(2880) };
+        let mut buffsize: usize = 2880;
+        let mut hdl = -1;
+        assert_eq!(
+            mem_openmem(
+                &raw mut buff,
+                &mut buffsize,
+                0,
+                Some(counting_realloc),
+                &mut hdl
+            ),
+            0
+        );
+
+        let status = unsafe { mem_zuncompress_and_write(hdl, &gz[..gzlen], gzlen) };
+        assert_eq!(status, 0);
+
+        let mut fsize = 0;
+        mem_size(hdl, &mut fsize);
+        mem_close_keep(hdl);
+
+        assert_eq!(fsize, data.len());
+        /* 2880 + 4 * 28800 is the first size of at least 100000 */
+        assert_eq!(CALLS.load(Ordering::SeqCst), 4);
+        assert_eq!(buffsize, 2880 + 4 * 28800);
+        // SAFETY: the caller's realloc left buff valid for buffsize bytes.
+        let got = unsafe { slice::from_raw_parts(buff.cast::<u8>(), data.len()) };
+        assert_eq!(got, &data[..]);
+        unsafe { libc::free(buff) };
     }
 }

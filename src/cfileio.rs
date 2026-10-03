@@ -81,6 +81,7 @@ use crate::getkey::{
     ffgcrd_safe, ffghsp_safe, ffgky_safe, ffgkyl_safe, ffgrec_safe, ffgtdmll_safe, ffmaky_safe,
 };
 use crate::group::{fits_clean_url, fits_get_cwd, fits_path2url};
+use crate::helpers::outbuf::OutBuf;
 use crate::histo::{ffbinse, ffhist2e};
 use crate::imcompress::{
     fits_set_compression_type_safe, fits_set_hcomp_scale_safe, fits_set_hcomp_smooth_safe,
@@ -2425,24 +2426,19 @@ pub(crate) fn check_is_mem_fits(inputmem: &[c_char], len: usize) -> c_int {
         /* Just need to uncompress the beginning portion of the
         file to test for FITS.  So just pass a small buffer
         that won't be reallocated by uncompress2mem_from_mem.*/
-        let mut nBuff: usize = 100;
+        let nBuff: usize = 100;
         let mut nUncomp: usize = 0;
         let mut status = 0;
         let mut tstFits: Vec<u8> = vec![0; nBuff + 1];
-        let mut tstFits_ptr: *mut u8 = tstFits.as_mut_ptr();
         /* This will return a bad status if all of inputmem buffer
         can't be uncompressed into tstFits, but we don't care. */
-        unsafe {
-            uncompress2mem_from_mem(
-                inputmem,
-                len,
-                &raw mut tstFits_ptr,
-                &mut nBuff,
-                None,
-                Some(&mut nUncomp),
-                &mut status,
-            );
-        }
+        uncompress2mem_from_mem(
+            inputmem,
+            len,
+            OutBuf::Fixed(&mut tstFits[..nBuff]),
+            Some(&mut nUncomp),
+            &mut status,
+        );
         tstFits[nUncomp] = 0;
         if strlen_safe(cast_slice(&tstFits)) >= 6
             && strncmp_safe(cast_slice(&tstFits), cs!(c"SIMPLE"), 6) == 0

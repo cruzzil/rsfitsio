@@ -42,6 +42,22 @@ impl AlignedBytes {
         self.len = len;
         Ok(())
     }
+
+    /// Resize to `len` bytes keeping the existing contents; any new bytes are
+    /// zero.  Reports allocation failure, leaving the buffer unchanged.
+    pub(crate) fn try_resize_keep(&mut self, len: usize) -> Result<(), TryReserveError> {
+        let words = len.div_ceil(size_of::<u64>());
+        if words > self.buf.len() {
+            self.buf.try_reserve(words - self.buf.len())?;
+        }
+        let oldlen = self.len;
+        self.buf.resize(words, 0);
+        self.len = len;
+        if len > oldlen {
+            self[oldlen..].fill(0);
+        }
+        Ok(())
+    }
 }
 
 impl Deref for AlignedBytes {
@@ -79,6 +95,18 @@ mod tests {
         b.try_resize_zeroed(16).unwrap();
         cast_slice_mut::<u8, i16>(&mut b)[3] = -2;
         assert_eq!(cast_slice::<u8, i16>(&b)[3], -2);
+    }
+
+    #[test]
+    fn test_resize_keep_preserves_contents_and_zeroes_growth() {
+        let mut b = AlignedBytes::new();
+        b.try_resize_zeroed(5).unwrap();
+        b.copy_from_slice(&[1, 2, 3, 4, 5]);
+        b.try_resize_keep(3).unwrap();
+        b.try_resize_keep(20).unwrap();
+        assert_eq!(&b[..3], &[1, 2, 3]);
+        assert!(b[3..].iter().all(|&x| x == 0));
+        assert_eq!(b.as_ptr().align_offset(align_of::<f64>()), 0);
     }
 
     #[test]
