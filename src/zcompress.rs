@@ -10,9 +10,9 @@ use std::io::{Read, Write};
 use crate::c_types::{c_char, c_int, c_uint, c_ulong};
 
 use libz_rs_sys::{
-    Z_BEST_SPEED, Z_BUF_ERROR, Z_DEFAULT_STRATEGY, Z_DEFLATED, Z_FINISH, Z_NO_FLUSH, Z_OK,
-    Z_STREAM_END, Z_STREAM_ERROR, deflate, deflateEnd, deflateInit2_, inflate, inflateEnd,
-    inflateInit2_, uInt, uLong, voidpf, z_stream, z_streamp, zlibVersion,
+    Z_BUF_ERROR, Z_DEFAULT_STRATEGY, Z_DEFLATED, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END,
+    Z_STREAM_ERROR, deflate, deflateEnd, deflateInit2_, inflate, inflateEnd, inflateInit2_, uInt,
+    uLong, voidpf, z_stream, z_streamp, zlibVersion,
 };
 
 use crate::fitsio::{DATA_COMPRESSION_ERR, DATA_DECOMPRESSION_ERR, MEMORY_ALLOCATION};
@@ -20,6 +20,16 @@ use crate::helpers::outbuf::OutBuf;
 
 const GZBUFSIZE: usize = 115200; /* 40 FITS blocks */
 const BUFFINCR: usize = 28800; /* 10 FITS blocks */
+
+/// Deflate level for the gzip writers, where the C passes `Z_BEST_SPEED` (1).
+///
+/// Deliberate divergence from the C: zlib-rs follows zlib-ng, whose level 1 is
+/// `deflate_quick`, which emits static Huffman blocks only. On noisy 16-bit
+/// pixels that expands the data: a GZIP_1 image came out larger than the raw
+/// pixels. Level 2 builds dynamic Huffman tables, as classic zlib's level 1
+/// does, and gives output no larger than CFITSIO's at about half its write
+/// time. Any inflater reads either.
+const GZIP_LEVEL: c_int = 2;
 
 pub(crate) unsafe fn inflateInit2(strm: z_streamp, windowBits: c_int) -> c_int {
     unsafe {
@@ -599,7 +609,7 @@ pub(crate) fn compress2mem_from_mem(
     err = unsafe {
         deflateInit2(
             &raw mut c_stream,
-            Z_BEST_SPEED,
+            GZIP_LEVEL, /* Z_BEST_SPEED in the C; see GZIP_LEVEL */
             Z_DEFLATED,
             15 + 16,
             8,
@@ -723,7 +733,7 @@ pub(crate) fn compress2file_from_mem<W: Write>(
         in compression factor. */
         err = deflateInit2(
             &raw mut c_stream,
-            Z_BEST_SPEED,
+            GZIP_LEVEL, /* Z_BEST_SPEED in the C; see GZIP_LEVEL */
             Z_DEFLATED,
             15 + 16,
             8,
