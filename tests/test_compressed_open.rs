@@ -45,7 +45,7 @@ mod tests {
         let mut n = 0;
         fits_get_img_size(f, 1, std::slice::from_mut(&mut n), &mut status);
         let mut out = vec![0u8; n as usize];
-        fits_read_img_byt(f, 1, 1, n, 0, &mut out, None, &mut status);
+        fits_read_img_byt(f, 1, 1, i64::from(n), 0, &mut out, None, &mut status);
         let mut st = 0;
         fits_close_file(fptr.take().unwrap(), &mut st);
         (status, out)
@@ -55,7 +55,10 @@ mod tests {
     #[cfg(unix)]
     fn peak_rss() -> u64 {
         let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-        assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut ru) }, 0);
+        assert_eq!(
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut ru) },
+            0
+        );
         let maxrss = ru.ru_maxrss as u64;
         if cfg!(target_os = "macos") {
             maxrss
