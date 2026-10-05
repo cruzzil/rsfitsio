@@ -1,0 +1,113 @@
+name: Release
+
+# Publishes to crates.io when a version tag (vX.Y.Z) is pushed, after the tag,
+# Cargo.toml and CHANGELOG.md have been checked to agree, then creates the
+# GitHub release from the CHANGELOG entry.
+#
+# To publish a tag that already exists, run it by hand from main:
+#   gh workflow run release.yml --ref main -f tag=vX.Y.Z
+#
+# crates.io trusts this workflow through trusted publishing (OIDC): there is no
+# API token in the repository. The publish job runs in the `release`
+# environment, which requires a reviewer's approval and only deploys from
+# v* tags and main.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, e.g. v0.470.5"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: refs/tags/${{ env.TAG }}
+    - name: Temporarily modify the rust toolchain version
+      run: rustup override set 1.96.0
+
+    - name: Check the tag, Cargo.toml and CHANGELOG.md agree
+      run: |
+        if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::tag '$TAG' is not of the form vX.Y.Z"; exit 1
+        fi
+        version="${TAG#v}"
+        pkgid="$(cargo pkgid)"   # ...#rsfitsio@X.Y.Z or ...#X.Y.Z
+        manifest="${pkgid##*[#@]}"
+        if [ "$manifest" != "$version" ]; then
+          echo "::error::tag $TAG but Cargo.toml says $manifest"; exit 1
+        fi
+        if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+          echo "::error::CHANGELOG.md has no '## [$version]' entry"; exit 1
+        fi
+
+    - name: Package and verify
+      run: cargo publish --dry-run
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: refs/tags/${{ env.TAG }}
+    - name: Temporarily modify the rust toolchain version
+      run: rustup override set 1.96.0
+
+    - name: Authenticate with crates.io
+      id: auth
+      uses: rust-lang/crates-io-auth-action@v1
+
+    - name: Publish to crates.io
+      run: cargo publish
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: refs/tags/${{ env.TAG }}
+
+    - name: Create the GitHub release from the CHANGELOG entry
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        version="${TAG#v}"
+        # The lines after '## [version]' up to the next '## [' heading.
+        awk -v v="$version" '
+          index($0, "## [" v "]") == 1 { on = 1; next }
+          on && /^## \[/ { exit }
+          on { print }
+        ' CHANGELOG.md > notes.md
+        if gh release view "$TAG" > /dev/null 2>&1; then
+          echo "release $TAG already exists"
+        else
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md --verify-tag
+        fi
