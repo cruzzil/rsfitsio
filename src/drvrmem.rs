@@ -367,6 +367,26 @@ pub(crate) fn mem_openmem(
     0
 }
 
+/// `len` zero bytes, or None if they cannot be allocated.
+///
+/// Uses `alloc_zeroed` (calloc) rather than writing the zeros, so that, like
+/// the C's malloc, a large buffer costs nothing until it is used: the OS
+/// supplies zeroed pages on first touch.
+fn zeroed_vec(len: usize) -> Option<Vec<c_char>> {
+    let layout = core::alloc::Layout::array::<c_char>(len).ok()?;
+    if layout.size() == 0 {
+        return Some(Vec::new());
+    }
+    // SAFETY: the layout has a non-zero size.
+    let p = unsafe { alloc::alloc::alloc_zeroed(layout) }.cast::<c_char>();
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: p was allocated by the global allocator with the layout of
+    // `len` c_chars, all of them initialised to zero.
+    Some(unsafe { Vec::from_raw_parts(p, len, len) })
+}
+
 ///  lowest level routine to allocate a memory file.
 pub(crate) fn mem_createmem(msize: usize, handle: &mut c_int) -> c_int {
     *handle = -1;
@@ -408,17 +428,14 @@ pub(crate) fn mem_createmem(msize: usize, handle: &mut c_int) -> c_int {
     /* allocate initial block of memory for the file */
     if msize > 0 {
         // HEAP ALLOCATION
-        let mut v = Vec::new();
-        if v.try_reserve_exact(msize).is_err() {
+        let Some(v) = zeroed_vec(msize) else {
             ffpmsg_str("malloc of initial memory failed (mem_createmem)");
             release_owned_cell(&mut m[ii]);
             return FILE_NOT_OPENED;
-        } else {
-            v.resize(msize, 0);
-            let (p, l, c) = vec_into_raw_parts(v);
-            ALLOCATIONS.lock().unwrap().insert(p as usize, (l, c));
-            unsafe { *m[ii].memaddrptr = p };
-        }
+        };
+        let (p, l, c) = vec_into_raw_parts(v);
+        ALLOCATIONS.lock().unwrap().insert(p as usize, (l, c));
+        unsafe { *m[ii].memaddrptr = p };
     }
 
     /* set initial state of the file */
@@ -769,6 +786,56 @@ pub(crate) fn stdout_close_unsafe(handle: c_int) -> c_int {
     }
 }
 
+/// The uncompressed size a gzip file implies, from its ISIZE trailer
+/// (`modulosize`) and its compressed size: the C's estimate in
+/// mem_compress_open.
+fn gzip_isize_estimate(modulosize: c_uint, filesize: usize) -> usize {
+    let mut finalsize = modulosize as usize;
+    let mut llsize: LONGLONG = 0;
+
+    /*
+      the field ISIZE in the gzipped file header only stores 4 bytes and contains
+      the uncompressed file size modulo 2^32.  If the uncompressed file size
+      is less than the compressed file size (filesize), then one probably needs to
+      add 2^32 = 4294967296 to the uncompressed file size, assuming that the gzip
+      produces a compressed file that is smaller than the original file.
+
+      But one must allow for the case of very small files, where the
+      gzipped file may actually be larger then the original uncompressed file.
+      Therefore, only perform the modulo 2^32 correction test if the compressed
+      file is greater than 10,000 bytes in size.  (Note: this threhold would
+      fail only if the original file was greater than 2^32 bytes in size AND gzip
+      was able to compress it by more than a factor of 400,000 (!) which seems
+      highly unlikely.)
+
+      Also, obviously, this 2^32 modulo correction cannot be performed if the
+      finalsize variable is only 32-bits long.  Typically, the 'size_t' integer
+      type must be 8 bytes or larger in size to support data files that are
+      greater than 2 GB (2^31 bytes) in size.
+    */
+
+    if mem::size_of::<usize>() > 4 && filesize > 10000 {
+        llsize = finalsize as LONGLONG;
+        /* use LONGLONG variable to suppress compiler warning */
+        while llsize < filesize as LONGLONG {
+            llsize += 4294967296;
+        }
+
+        finalsize = llsize as usize;
+    }
+    finalsize
+}
+
+/// The most that `filesize` bytes of compressed data can inflate to.
+///
+/// Not in the C. Deflate expands by at most 1032:1 (a 258-byte match per
+/// ~2 bits); the 64 KiB covers headers and tiny files. Used to bound the
+/// size a file claims; a file that does inflate further still opens, as the
+/// memory file grows while inflating.
+fn max_inflated_size(filesize: usize) -> usize {
+    filesize.saturating_mul(1032).saturating_add(65_536)
+}
+
 /// This routine opens the compressed diskfile and creates an empty memory
 /// buffer with an appropriate size, then calls mem_uncompress2mem. It allows
 /// the memory 'file' to be opened with READWRITE access.
@@ -789,7 +856,6 @@ pub(crate) fn mem_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &mu
         let mut buffer: [c_uchar; 4] = [0; 4];
         let mut finalsize: usize = 0;
         let mut filesize: usize = 0;
-        let mut llsize: LONGLONG = 0;
         let mut modulosize: c_uint = 0;
 
         let mut diskfile = None;
@@ -843,41 +909,17 @@ pub(crate) fn mem_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &mu
             modulosize |= c_uint::from(buffer[2]) << 16;
             modulosize |= c_uint::from(buffer[3]) << 24;
 
-            /*
-              the field ISIZE in the gzipped file header only stores 4 bytes and contains
-              the uncompressed file size modulo 2^32.  If the uncompressed file size
-              is less than the compressed file size (filesize), then one probably needs to
-              add 2^32 = 4294967296 to the uncompressed file size, assuming that the gzip
-              produces a compressed file that is smaller than the original file.
-
-              But one must allow for the case of very small files, where the
-              gzipped file may actually be larger then the original uncompressed file.
-              Therefore, only perform the modulo 2^32 correction test if the compressed
-              file is greater than 10,000 bytes in size.  (Note: this threhold would
-              fail only if the original file was greater than 2^32 bytes in size AND gzip
-              was able to compress it by more than a factor of 400,000 (!) which seems
-              highly unlikely.)
-
-              Also, obviously, this 2^32 modulo correction cannot be performed if the
-              finalsize variable is only 32-bits long.  Typically, the 'size_t' integer
-              type must be 8 bytes or larger in size to support data files that are
-              greater than 2 GB (2^31 bytes) in size.
-            */
-            finalsize = modulosize as usize;
-
-            if mem::size_of::<usize>() > 4 && filesize > 10000 {
-                llsize = finalsize as LONGLONG;
-                /* use LONGLONG variable to suppress compiler warning */
-                while llsize < filesize as LONGLONG {
-                    llsize += 4294967296;
-                }
-
-                finalsize = llsize as usize;
-            }
+            finalsize = gzip_isize_estimate(modulosize, filesize);
 
             estimated = 0; /* file size is known, not estimated */
         } else if buffer[..2] == [0o120, 0o113] {
             /* PKZIP */
+
+            /* not in the C: the compressed size, for max_inflated_size */
+            filesize = match diskfile.seek(SeekFrom::End(0)) {
+                Ok(pos) => pos as usize,
+                Err(_) => return SEEK_ERROR,
+            };
 
             /* the uncompressed file size is give at byte 22 the file */
             if diskfile.seek(SeekFrom::Start(22)).is_err() {
@@ -928,6 +970,12 @@ pub(crate) fn mem_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &mu
             };
             finalsize *= 3; /* assume factor of 3 compression */
         }
+
+        /* Not in the C: never start with more than the file could inflate to.
+        A file can claim any size (ISIZE, the PKZIP field, or the wrap
+        correction above adding 4 GiB), and the memory file grows as needed
+        while inflating (mem_uncompress2mem), so only the cost changes. */
+        finalsize = finalsize.min(max_inflated_size(filesize));
 
         let _ = diskfile.rewind(); /* move back to beginning of file */
 
@@ -1780,6 +1828,36 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// The C's ISIZE estimate is unchanged; the cap only lowers claims the
+    /// file could not inflate to.
+    #[test]
+    fn test_compressed_open_estimate() {
+        let capped = |isize: c_uint, filesize: usize| {
+            gzip_isize_estimate(isize, filesize).min(max_inflated_size(filesize))
+        };
+        /* an honest trailer: unchanged (decp20.fits gzipped) */
+        assert_eq!(gzip_isize_estimate(16_827_840, 11_400_000), 16_827_840);
+        assert_eq!(capped(16_827_840, 11_400_000), 16_827_840);
+        /* small files are not wrap-corrected */
+        assert_eq!(capped(5, 30), 5);
+        /* a 20-byte file claiming 3.9 GB */
+        assert_eq!(gzip_isize_estimate(3_897_424_373, 20), 3_897_424_373);
+        assert_eq!(capped(3_897_424_373, 20), 20 * 1032 + 65_536);
+        /* over 10 000 bytes with ISIZE 0: the C adds 4 GiB */
+        assert_eq!(gzip_isize_estimate(0, 10_041), 1 << 32);
+        assert_eq!(capped(0, 10_041), 10_041 * 1032 + 65_536);
+        assert_eq!(max_inflated_size(usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn test_zeroed_vec() {
+        let v = zeroed_vec(100_000).unwrap();
+        assert_eq!(v.len(), 100_000);
+        assert!(v.iter().all(|&b| b == 0));
+        assert!(zeroed_vec(0).unwrap().is_empty());
+        assert!(zeroed_vec(usize::MAX).is_none());
+    }
 
     /// A caller's realloc, as passed to ffimem, that counts its calls.
     unsafe extern "C" fn counting_realloc(p: *mut c_void, newsize: usize) -> *mut c_void {
