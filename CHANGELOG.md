@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.470.5] - 2026.10.05
+
+### Fixed
+- GZIP output is no larger than CFITSIO's. zlib-rs's level 1 emits static Huffman
+  blocks only, which made GZIP_1 images larger than their raw pixels and GZIP_2 and
+  `.gz` files far larger than CFITSIO's; level 2 is used instead. Any inflater reads
+  the output (#140).
+- Opening a compressed file no longer allocates and zeroes the full size the file
+  claims. A 20-byte `.gz` could cost 3.8 GB, and a valid multi-member `.gz` over
+  10 kB 4 GB; the starting buffer is now capped at what the file could inflate to,
+  and memory files are allocated lazily, as with the C's `malloc` (#141).
+
 ## [0.470.4] - 2026.10.04
 
 ### Fixed
