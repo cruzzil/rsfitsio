@@ -10,6 +10,7 @@
 //! Space Flight Center.
 #![warn(missing_docs)]
 
+use crate::helpers::nularray::nul_tail;
 use core::slice;
 use core::{cmp, mem};
 
@@ -1500,6 +1501,10 @@ pub(crate) fn ffgcluj(
             maxelem = LONGLONG::from(INT32_MAX / 4);
         }
     }
+    /* Unlike the C, the TLONG case is read into the scratch buffer and
+    converted from there rather than in place in the output array, so
+    each chunk must fit in the buffer. */
+    maxelem = LONGLONG::from(maxelem2);
 
     /*  Now read the pixels from the FITS column. If the column does not   */
     /*  have the same datatype as the output array, then we have to read   */
@@ -1543,7 +1548,7 @@ pub(crate) fn ffgcluj(
                         nulcheck,
                         tnull as c_int,
                         nulval,
-                        cast_slice_mut(&mut nularray[next..]),
+                        cast_slice_mut(nul_tail(nularray, next)),
                         anynul.as_deref_mut(),
                         cast_slice_mut(&mut array[next..]),
                         status,
@@ -1560,7 +1565,7 @@ pub(crate) fn ffgcluj(
                         nulcheck,
                         tnull as c_int,
                         nulval,
-                        cast_slice_mut(&mut nularray[next..]),
+                        cast_slice_mut(nul_tail(nularray, next)),
                         anynul.as_deref_mut(),
                         cast_slice_mut(&mut array[next..]),
                         status,
@@ -1578,7 +1583,7 @@ pub(crate) fn ffgcluj(
                     nulcheck,
                     tnull,
                     nulval,
-                    cast_slice_mut(&mut nularray[next..]),
+                    cast_slice_mut(nul_tail(nularray, next)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[next..]),
                     status,
@@ -1595,7 +1600,7 @@ pub(crate) fn ffgcluj(
                     nulcheck,
                     tnull as u8,
                     nulval,
-                    cast_slice_mut(&mut nularray[next..]),
+                    cast_slice_mut(nul_tail(nularray, next)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[next..]),
                     status,
@@ -1612,7 +1617,7 @@ pub(crate) fn ffgcluj(
                     nulcheck,
                     tnull as c_short,
                     nulval,
-                    cast_slice_mut(&mut nularray[next..]),
+                    cast_slice_mut(nul_tail(nularray, next)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[next..]),
                     status,
@@ -1628,7 +1633,7 @@ pub(crate) fn ffgcluj(
                     zero,
                     nulcheck,
                     nulval,
-                    cast_slice_mut(&mut nularray[next..]),
+                    cast_slice_mut(nul_tail(nularray, next)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[next..]),
                     status,
@@ -1644,7 +1649,7 @@ pub(crate) fn ffgcluj(
                     zero,
                     nulcheck,
                     nulval,
-                    cast_slice_mut(&mut nularray[next..]),
+                    cast_slice_mut(nul_tail(nularray, next)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[next..]),
                     status,
@@ -1682,7 +1687,7 @@ pub(crate) fn ffgcluj(
                     nulcheck,
                     &snull,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[next..]),
                     status,
@@ -4399,7 +4404,7 @@ pub(crate) fn ffgclujj(
                     tnull,
                     nulval,
                     if nulcheck == NullCheckType::SetNullArray {
-                        &mut nularray[(next as usize)..]
+                        nul_tail(nularray, next as usize)
                     } else {
                         nularray
                     }, // WARNING: THIS IS A HACK. Should use Options instead
@@ -4419,7 +4424,7 @@ pub(crate) fn ffgclujj(
                     nulcheck,
                     tnull as INT32BIT,
                     nulval,
-                    &mut nularray[(next as usize)..],
+                    nul_tail(nularray, next as usize),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[(next as usize)..]),
                     status,
@@ -4436,7 +4441,7 @@ pub(crate) fn ffgclujj(
                     nulcheck,
                     tnull as u8,
                     nulval,
-                    cast_slice_mut(&mut nularray[(next as usize)..]),
+                    cast_slice_mut(nul_tail(nularray, next as usize)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[(next as usize)..]),
                     status,
@@ -4453,7 +4458,7 @@ pub(crate) fn ffgclujj(
                     nulcheck,
                     tnull as c_short,
                     nulval,
-                    cast_slice_mut(&mut nularray[(next as usize)..]),
+                    cast_slice_mut(nul_tail(nularray, next as usize)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[(next as usize)..]),
                     status,
@@ -4469,7 +4474,7 @@ pub(crate) fn ffgclujj(
                     zero,
                     nulcheck,
                     nulval,
-                    cast_slice_mut(&mut nularray[(next as usize)..]),
+                    cast_slice_mut(nul_tail(nularray, next as usize)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[(next as usize)..]),
                     status,
@@ -4485,7 +4490,7 @@ pub(crate) fn ffgclujj(
                     zero,
                     nulcheck,
                     nulval,
-                    cast_slice_mut(&mut nularray[(next as usize)..]),
+                    cast_slice_mut(nul_tail(nularray, next as usize)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[(next as usize)..]),
                     status,
@@ -4511,7 +4516,7 @@ pub(crate) fn ffgclujj(
                     nulcheck,
                     &snull,
                     nulval,
-                    cast_slice_mut(&mut nularray[(next as usize)..]),
+                    cast_slice_mut(nul_tail(nularray, next as usize)),
                     anynul.as_deref_mut(),
                     cast_slice_mut(&mut array[(next as usize)..]),
                     status,

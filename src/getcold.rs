@@ -10,6 +10,7 @@
 //! Space Flight Center.
 #![warn(missing_docs)]
 
+use crate::helpers::nularray::nul_tail;
 use core::slice;
 use core::{cmp, mem};
 
@@ -1764,6 +1765,11 @@ pub(crate) fn ffgcld(
 
         if nulcheck == NullCheckType::None && scale == 1.0 && zero == 0.0 {
             convert = false; /* no need to scale data or find nulls */
+        } else {
+            /* Unlike the C, the conversion goes through the scratch buffer
+            rather than in place in the output array, so each chunk must fit
+            in the buffer. */
+            maxelem = LONGLONG::from(maxelem2);
         }
     }
 
@@ -1819,7 +1825,7 @@ pub(crate) fn ffgcld(
                         zero,
                         nulcheck,
                         nulval,
-                        &mut nularray[next..],
+                        nul_tail(nularray, next),
                         anynul.as_deref_mut(),
                         &mut array[next..],
                         status,
@@ -1846,7 +1852,7 @@ pub(crate) fn ffgcld(
                     nulcheck,
                     tnull as u8,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1869,7 +1875,7 @@ pub(crate) fn ffgcld(
                     nulcheck,
                     tnull as _,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1892,7 +1898,7 @@ pub(crate) fn ffgcld(
                     nulcheck,
                     tnull as INT32BIT,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1915,7 +1921,7 @@ pub(crate) fn ffgcld(
                     nulcheck,
                     tnull,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1937,7 +1943,7 @@ pub(crate) fn ffgcld(
                     zero,
                     nulcheck,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1977,7 +1983,7 @@ pub(crate) fn ffgcld(
                     nulcheck,
                     &snull,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,

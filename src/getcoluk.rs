@@ -10,6 +10,7 @@
 //! Space Flight Center.
 #![warn(missing_docs)]
 
+use crate::helpers::nularray::nul_tail;
 use core::slice;
 use core::{cmp, mem};
 
@@ -1549,6 +1550,10 @@ pub(crate) fn ffgcluk(
                 maxelem = LONGLONG::from(INT32_MAX / 4);
             }
         }
+        /* Unlike the C, the TLONG case is read into the scratch buffer and
+        converted from there rather than in place in the output array, so
+        each chunk must fit in the buffer. */
+        maxelem = LONGLONG::from(maxelem2);
 
         /*  Now read the pixels from the FITS column. If the column does not   */
         /*  have the same datatype as the output array, then we have to read   */
@@ -1598,7 +1603,7 @@ pub(crate) fn ffgcluk(
                         nulcheck,
                         tnull as INT32BIT,
                         nulval,
-                        &mut nularray[next..],
+                        nul_tail(nularray, next),
                         anynul.as_deref_mut(),
                         &mut array[next..],
                         status,
@@ -1621,7 +1626,7 @@ pub(crate) fn ffgcluk(
                         nulcheck,
                         tnull,
                         nulval,
-                        &mut nularray[next..],
+                        nul_tail(nularray, next),
                         anynul.as_deref_mut(),
                         &mut array[next..],
                         status,
@@ -1645,7 +1650,7 @@ pub(crate) fn ffgcluk(
                         nulcheck,
                         tnull as u8,
                         nulval,
-                        &mut nularray[next..],
+                        nul_tail(nularray, next),
                         anynul.as_deref_mut(),
                         &mut array[next..],
                         status,
@@ -1668,7 +1673,7 @@ pub(crate) fn ffgcluk(
                         nulcheck,
                         tnull as c_short,
                         nulval,
-                        &mut nularray[next..],
+                        nul_tail(nularray, next),
                         anynul.as_deref_mut(),
                         &mut array[next..],
                         status,
@@ -1690,7 +1695,7 @@ pub(crate) fn ffgcluk(
                         zero,
                         nulcheck,
                         nulval,
-                        &mut nularray[next..],
+                        nul_tail(nularray, next),
                         anynul.as_deref_mut(),
                         &mut array[next..],
                         status,
@@ -1712,7 +1717,7 @@ pub(crate) fn ffgcluk(
                         zero,
                         nulcheck,
                         nulval,
-                        &mut nularray[next..],
+                        nul_tail(nularray, next),
                         anynul.as_deref_mut(),
                         &mut array[next..],
                         status,
@@ -1751,7 +1756,7 @@ pub(crate) fn ffgcluk(
                         nulcheck,
                         &snull,
                         nulval,
-                        &mut nularray[next..],
+                        nul_tail(nularray, next),
                         anynul.as_deref_mut(),
                         &mut array[next..],
                         status,

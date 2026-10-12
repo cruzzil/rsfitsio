@@ -10,6 +10,7 @@
 //! Space Flight Center.
 #![warn(missing_docs)]
 
+use crate::helpers::nularray::nul_tail;
 use core::slice;
 use core::{cmp, mem};
 
@@ -1572,7 +1573,7 @@ pub(crate) fn ffgclui(
                     nulcheck,
                     tnull as u8,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1599,11 +1600,7 @@ pub(crate) fn ffgclui(
                     nulcheck,
                     tnull as c_short,
                     nulval,
-                    if nulcheck == NullCheckType::SetNullArray {
-                        &mut nularray[next..]
-                    } else {
-                        nularray
-                    }, // WARNING: THIS IS A HACK. Should use Options instead
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     status,
                 );
@@ -1625,7 +1622,7 @@ pub(crate) fn ffgclui(
                     nulcheck,
                     tnull as INT32BIT,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1648,7 +1645,7 @@ pub(crate) fn ffgclui(
                     nulcheck,
                     tnull,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1670,7 +1667,7 @@ pub(crate) fn ffgclui(
                     zero,
                     nulcheck,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1692,7 +1689,7 @@ pub(crate) fn ffgclui(
                     zero,
                     nulcheck,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1731,7 +1728,7 @@ pub(crate) fn ffgclui(
                     nulcheck,
                     &snull,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
