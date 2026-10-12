@@ -54,7 +54,7 @@ ref_as_ptr = "deny"
 [dependencies]
 libz-rs-sys = { version = "0.6.6" }
 libbz2-rs-sys = { version = "0.2.5", optional = true}
-libc="0.2.186"
+libc="0.2.172"
 bytemuck = "1.25.1"
 fastrand = "2.4"
 pwd = "1.4"
