@@ -5534,7 +5534,8 @@ pub fn ffgacl_safe(
 /// * `colnum` — (I) column number
 /// * `ttype`  — (O) TTYPEn keyword value
 /// * `tunit`  — (O) TUNITn keyword value
-/// * `dtype`  — (O) datatype char: I, J, E, D, etc.
+/// * `dtype`  — (O) datatype char: I, J, E, D, etc., with a `P` prefix for
+///   variable length columns, so up to 2 characters and the terminating nul
 /// * `repeat` — (O) vector column repeat count
 /// * `tscal`  — (O) TSCALn keyword value
 /// * `tzero`  — (O) TZEROn keyword value
@@ -5547,7 +5548,7 @@ pub unsafe extern "C" fn ffgbcl(
     colnum: c_int,
     ttype: *mut c_char,
     tunit: *mut c_char,
-    dtype: *mut [c_char; 2],
+    dtype: *mut [c_char; 3],
     repeat: *mut c_long,
     tscal: *mut f64,
     tzero: *mut f64,
@@ -5598,7 +5599,8 @@ pub unsafe extern "C" fn ffgbcl(
 /// * `colnum` — (I) column number
 /// * `ttype`  — (O) TTYPEn keyword value
 /// * `tunit`  — (O) TUNITn keyword value
-/// * `dtype`  — (O) datatype char: I, J, E, D, etc.
+/// * `dtype`  — (O) datatype char: I, J, E, D, etc., with a `P` prefix for
+///   variable length columns, so up to 2 characters and the terminating nul
 /// * `repeat` — (O) vector column repeat count
 /// * `tscal`  — (O) TSCALn keyword value
 /// * `tzero`  — (O) TZEROn keyword value
@@ -5610,7 +5612,7 @@ pub fn ffgbcl_safe(
     colnum: c_int,
     ttype: Option<&mut [c_char]>,
     tunit: Option<&mut [c_char]>,
-    dtype: Option<&mut [c_char; 2]>,
+    dtype: Option<&mut [c_char; 3]>,
     repeat: Option<&mut c_long>,
     tscal: Option<&mut f64>,
     tzero: Option<&mut f64>,
@@ -5658,7 +5660,8 @@ pub fn ffgbcl_safe(
 /// * `colnum` — (I) column number
 /// * `ttype`  — (O) TTYPEn keyword value
 /// * `tunit`  — (O) TUNITn keyword value
-/// * `dtype`  — (O) datatype char: I, J, E, D, etc.
+/// * `dtype`  — (O) datatype char: I, J, E, D, etc., with a `P` prefix for
+///   variable length columns, so up to 2 characters and the terminating nul
 /// * `repeat` — (O) vector column repeat count
 /// * `tscal`  — (O) TSCALn keyword value
 /// * `tzero`  — (O) TZEROn keyword value
@@ -5671,7 +5674,7 @@ pub unsafe extern "C" fn ffgbclll(
     colnum: c_int,
     ttype: *mut c_char,
     tunit: *mut c_char,
-    dtype: *mut [c_char; 2],
+    dtype: *mut [c_char; 3],
     repeat: *mut LONGLONG,
     tscal: *mut f64,
     tzero: *mut f64,
@@ -5722,7 +5725,8 @@ pub unsafe extern "C" fn ffgbclll(
 /// * `colnum` — (I) column number
 /// * `ttype`  — (O) TTYPEn keyword value
 /// * `tunit`  — (O) TUNITn keyword value
-/// * `dtype`  — (O) datatype char: I, J, E, D, etc.
+/// * `dtype`  — (O) datatype char: I, J, E, D, etc., with a `P` prefix for
+///   variable length columns, so up to 2 characters and the terminating nul
 /// * `repeat` — (O) vector column repeat count
 /// * `tscal`  — (O) TSCALn keyword value
 /// * `tzero`  — (O) TZEROn keyword value
@@ -5734,7 +5738,7 @@ pub fn ffgbclll_safe(
     colnum: c_int,
     ttype: Option<&mut [c_char]>,
     tunit: Option<&mut [c_char]>,
-    dtype: Option<&mut [c_char; 2]>,
+    dtype: Option<&mut [c_char; 3]>,
     repeat: Option<&mut LONGLONG>,
     tscal: Option<&mut f64>,
     tzero: Option<&mut f64>,

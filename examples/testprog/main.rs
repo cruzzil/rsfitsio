@@ -124,7 +124,8 @@ pub fn main() -> ExitCode {
     let mut signval: c_int;
     let mut nmsg: c_int;
     let mut cval: c_char;
-    let mut cvalstr: [c_char; 2] = [0; 2];
+    // 3 rather than the C's 2, the room ffgbcl takes for a `P` prefix
+    let mut cvalstr: [c_char; 3] = [0; 3];
     let mut repeat: c_long = 0;
     let mut offset: c_long = 0;
     let mut width: c_long = 0;
@@ -2802,7 +2803,7 @@ pub fn main() -> ExitCode {
                     ii + 1,
                     ttype[0],
                     tunit[0],
-                    cvalstr.as_mut_ptr().cast::<[c_char; 2]>(),
+                    cvalstr.as_mut_ptr().cast::<[c_char; 3]>(),
                     &raw mut repeat,
                     &raw mut scale,
                     &raw mut zero,

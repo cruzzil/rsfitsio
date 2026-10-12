@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `fits_get_bcolparms` (`ffgbcl`, `ffgbclll`) reports a variable length column's
+  datatype as e.g. `PE` rather than `P`. `dtype` is now `[c_char; 3]`, room for the
+  `P` prefix, the type and the nul, as the C writes.
 - Reading more pixels than fit in the 28800-byte scratch buffer no longer panics.
   Reads that span several buffer-fulls sliced the one-element dummy null array
   past its end, and the TINT, TUINT, TLONGLONG and scaled TDOUBLE readers kept
