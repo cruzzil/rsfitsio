@@ -5,24 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.470.6] - 2026.10.13
 
 ### Fixed
 - A panic no longer breaks every later operation in the process. The tables that
   stand in for CFITSIO's globals (open disk and memory files, the error stack,
   allocations, ...) recovered from a poisoned lock only under `FFLOCK`; elsewhere
   one panic made each later call panic with `PoisonError`, and a file closed while
-  unwinding then aborted the process.
+  unwinding then aborted the process (#145).
 - `fits_get_bcolparms` (`ffgbcl`, `ffgbclll`) reports a variable length column's
   datatype as e.g. `PE` rather than `P`. `dtype` is now `[c_char; 3]`, room for the
-  `P` prefix, the type and the nul, as the C writes.
+  `P` prefix, the type and the nul, as the C writes (#144).
 - Reading more pixels than fit in the 28800-byte scratch buffer no longer panics.
   Reads that span several buffer-fulls sliced the one-element dummy null array
   past its end, and the TINT, TUINT, TLONGLONG and scaled TDOUBLE readers kept
   CFITSIO's read-in-place chunk size while converting through the scratch buffer.
-  Through the C API the panic aborted the process.
+  Through the C API the panic aborted the process (#143).
 - `fits_set_bscale` (`ffpscl`) takes effect; it was scaling a copy of the column
-  descriptor.
+  descriptor (#143).
+
+### Changed
+- The `libc` requirement is relaxed to 0.2.172. libc 0.2.184 raised its MSRV to
+  1.65, and the minimum applies to every crate in a dependent's lockfile (#143).
 
 ## [0.470.5] - 2026.10.05
 
