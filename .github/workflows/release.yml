@@ -50,6 +50,7 @@ jobs:
           echo "::error::tag '$TAG' is not of the form vX.Y.Z"; exit 1
         fi
         version="${TAG#v}"
+        cargo generate-lockfile  # Cargo.lock is not committed, and cargo pkgid needs one
         pkgid="$(cargo pkgid)"   # ...#rsfitsio@X.Y.Z or ...#X.Y.Z
         manifest="${pkgid##*[#@]}"
         if [ "$manifest" != "$version" ]; then
