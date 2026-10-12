@@ -169,7 +169,7 @@ pub fn ffpscl_safe(fptr: &mut fitsfile, scale: f64, zero: f64, status: &mut c_in
 
     /* set pointer to the first 'column' (contains group parameters if any) */
     let c = fptr.Fptr.get_tableptr_as_mut_slice();
-    let mut colptr = c[1]; /* increment to the 2nd 'column' pointer  (the image itself) */
+    let colptr = &mut c[1]; /* increment to the 2nd 'column' pointer  (the image itself) */
 
     (colptr).tscale = scale;
     (colptr).tzero = zero;

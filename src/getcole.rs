@@ -10,6 +10,7 @@
 //! Space Flight Center.
 #![warn(missing_docs)]
 
+use crate::helpers::nularray::nul_tail;
 use core::slice;
 use core::{cmp, mem};
 
@@ -1813,7 +1814,7 @@ pub(crate) fn ffgcle(
                         zero,
                         nulcheck,
                         nulval,
-                        &mut nularray[next..],
+                        nul_tail(nularray, next),
                         anynul.as_deref_mut(),
                         status,
                     );
@@ -1839,7 +1840,7 @@ pub(crate) fn ffgcle(
                     nulcheck,
                     tnull as u8,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1862,7 +1863,7 @@ pub(crate) fn ffgcle(
                     nulcheck,
                     tnull as _,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1885,7 +1886,7 @@ pub(crate) fn ffgcle(
                     nulcheck,
                     tnull as INT32BIT,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1908,7 +1909,7 @@ pub(crate) fn ffgcle(
                     nulcheck,
                     tnull,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1930,7 +1931,7 @@ pub(crate) fn ffgcle(
                     zero,
                     nulcheck,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
@@ -1970,7 +1971,7 @@ pub(crate) fn ffgcle(
                     nulcheck,
                     &snull,
                     nulval,
-                    &mut nularray[next..],
+                    nul_tail(nularray, next),
                     anynul.as_deref_mut(),
                     &mut array[next..],
                     status,
