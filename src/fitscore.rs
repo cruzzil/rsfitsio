@@ -633,7 +633,7 @@ pub unsafe extern "C" fn ffpmsg(err_message: *const c_char) {
 
 /// put message on to error stack
 pub fn ffpmsg_safe(err_message: &[c_char]) {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
     stack.push_message(cstr_bytes(err_message));
 }
 
@@ -642,12 +642,12 @@ pub fn ffpmsg_safe(err_message: &[c_char]) {
 /// See `ffpmsg_str` and `ffpmsg_slice` for the other spellings; those are
 /// crate-private.
 pub fn ffpmsg_cstr(err_message: &CStr) {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
     stack.push_message(err_message.to_bytes());
 }
 
 pub(crate) fn ffpmsg_slice(err_message: &[c_char]) {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
     stack.push_message(cstr_bytes(err_message));
 }
 
@@ -659,7 +659,7 @@ fn cstr_bytes(s: &[c_char]) -> &[u8] {
 }
 
 pub(crate) fn ffpmsg_str(err_message: &str) {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
     stack.push_message(err_message.as_bytes());
 }
 
@@ -680,7 +680,7 @@ pub unsafe extern "C" fn ffpmrk() {
 ///
 ///  The marker is ignored by the ffgmsg routine.
 pub fn ffpmrk_safe() {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
     stack.push_marker();
 }
 
@@ -696,7 +696,7 @@ pub unsafe extern "C" fn ffgmsg(err_message: *mut c_char) -> c_int {
 
 /// get oldest message from error stack, ignoring markers
 pub fn ffgmsg_safe(err_message: &mut [c_char; FLEN_ERRMSG]) -> c_int {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
 
     if let Some(message) = stack.pop_message() {
         // Copy message to buffer
@@ -725,7 +725,7 @@ pub unsafe extern "C" fn ffcmsg() {
 
 ///  erase all messages in the error stack
 pub fn ffcmsg_safe() {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
     stack.clear_all();
 }
 
@@ -740,7 +740,7 @@ pub unsafe extern "C" fn ffcmrk() {
 /// erase newest messages in the error stack, stopping if a marker is found.
 /// The marker is also erased in this case.
 pub fn ffcmrk_safe() {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
     stack.clear_to_marker();
 }
 
@@ -757,7 +757,7 @@ pub fn ffcmrk_safe() {
 /// PutMesg    5  add a new message to the stack
 /// PutMark    6  add a marker to the stack
 pub(crate) fn ffxmsg_safe(action: c_int, errmsg: Option<&mut [c_char; FLEN_ERRMSG]>) {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
 
     match action {
         DEL_ALL => {
@@ -805,7 +805,7 @@ pub(crate) fn ffxmsg_safe(action: c_int, errmsg: Option<&mut [c_char; FLEN_ERRMS
 /// PutMesg    5  add a new message to the stack
 /// PutMark    6  add a marker to the stack
 pub(crate) fn ffxmsg(action: c_int, errmsg: *mut c_char) {
-    let mut stack = ERROR_STACK.lock().unwrap();
+    let mut stack = crate::lock_global(&ERROR_STACK);
 
     match action {
         DEL_ALL => {
@@ -6438,7 +6438,7 @@ pub(crate) fn ffpinit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
             /* free the tile-compressed image cache, if it exists */
             if !fptr.Fptr.tilerow.is_null() {
                 // HEAP DEALLOCATION
-                let mut tilestruct_lock = TILE_STRUCTS.lock().unwrap();
+                let mut tilestruct_lock = crate::lock_global(&TILE_STRUCTS);
                 let _ = tilestruct_lock.remove_entry(&(&raw const fptr.Fptr as usize));
                 drop(tilestruct_lock);
 
@@ -6454,7 +6454,7 @@ pub(crate) fn ffpinit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
                 /* free memory for the old CHDU */
 
                 // HEAP DEALLOCATION
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(fptr.Fptr.tableptr as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -6489,7 +6489,7 @@ pub(crate) fn ffpinit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
             /* free the tile-compressed image cache, if it exists */
             if !fptr.Fptr.tilerow.is_null() {
                 // HEAP DEALLOCATION
-                let mut tilestruct_lock = TILE_STRUCTS.lock().unwrap();
+                let mut tilestruct_lock = crate::lock_global(&TILE_STRUCTS);
                 let _ = tilestruct_lock.remove_entry(&(&raw const fptr.Fptr as usize));
                 drop(tilestruct_lock);
 
@@ -6504,7 +6504,7 @@ pub(crate) fn ffpinit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
             if !fptr.Fptr.tableptr.is_null() {
                 /* free memory for the old CHDU */
                 // HEAP DEALLOCATION
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(fptr.Fptr.tableptr as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -6550,7 +6550,7 @@ pub(crate) fn ffpinit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
             /* copy the table structure address to the fitsfile structure */
 
             let (p, l, c) = vec_into_raw_parts(colptr);
-            ALLOCATIONS.lock().unwrap().insert(p as usize, (l, c));
+            crate::lock_global(&ALLOCATIONS).insert(p as usize, (l, c));
             fptr.Fptr.tableptr = p;
         }
 
@@ -6621,7 +6621,7 @@ pub(crate) fn ffainit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
         /* free the tile-compressed image cache, if it exists */
         if !fptr.Fptr.tilerow.is_null() {
             // HEAP DEALLOCATION
-            let mut tilestruct_lock = TILE_STRUCTS.lock().unwrap();
+            let mut tilestruct_lock = crate::lock_global(&TILE_STRUCTS);
             let _ = tilestruct_lock.remove_entry(&(&raw const fptr.Fptr as usize));
             drop(tilestruct_lock);
 
@@ -6636,7 +6636,7 @@ pub(crate) fn ffainit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
         if !fptr.Fptr.tableptr.is_null() {
             /* free memory for the old CHDU */
             // HEAP DEALLOCATION
-            let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+            let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
             let alloc = alloc_lock.remove(&(fptr.Fptr.tableptr as usize));
             if let Some((l, c)) = alloc {
                 // HEAP DEALLOCATION
@@ -6662,7 +6662,7 @@ pub(crate) fn ffainit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
             }
 
             let (p, l, c) = vec_into_raw_parts(tmp);
-            ALLOCATIONS.lock().unwrap().insert(p as usize, (l, c));
+            crate::lock_global(&ALLOCATIONS).insert(p as usize, (l, c));
             colptr = p;
         }
 
@@ -6884,7 +6884,7 @@ pub(crate) fn ffbinit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
         /* free the tile-compressed image cache, if it exists */
         if !fptr.Fptr.tilerow.is_null() {
             // HEAP DEALLOCATION
-            let mut tilestruct_lock = TILE_STRUCTS.lock().unwrap();
+            let mut tilestruct_lock = crate::lock_global(&TILE_STRUCTS);
             let _ = tilestruct_lock.remove_entry(&(&raw const fptr.Fptr as usize));
             drop(tilestruct_lock);
 
@@ -6899,7 +6899,7 @@ pub(crate) fn ffbinit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
         if !fptr.Fptr.tableptr.is_null() {
             /* free memory for the old CHDU */
             // HEAP DEALLOCATION
-            let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+            let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
             let alloc = alloc_lock.remove(&(fptr.Fptr.tableptr as usize));
             if let Some((l, c)) = alloc {
                 // HEAP DEALLOCATION
@@ -6926,7 +6926,7 @@ pub(crate) fn ffbinit(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
             }
 
             let (p, l, c) = vec_into_raw_parts(tmp);
-            ALLOCATIONS.lock().unwrap().insert(p as usize, (l, c));
+            crate::lock_global(&ALLOCATIONS).insert(p as usize, (l, c));
             colptr = p;
         }
 
@@ -7657,7 +7657,7 @@ pub(crate) fn ffgcprll(
         /* writing FITS files directly out to the stdout stream. */
         /* This only needs to be done once and is thread safe. */
 
-        let mut st = STREAM_DRIVER.lock().unwrap();
+        let mut st = crate::lock_global(&STREAM_DRIVER);
         if *st <= 0 || *st > 40 {
             urltype2driver(cs!(c"stream://"), st.borrow_mut());
         }
@@ -9283,7 +9283,7 @@ pub(crate) fn ffchdu(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
         /* free memory for the CHDU structure only if no other files are using it */
         if !fptr.Fptr.tableptr.is_null() {
             // HEAP DEALLOCATION
-            let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+            let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
             let alloc = alloc_lock.remove(&(fptr.Fptr.tableptr as usize));
             if let Some((l, c)) = alloc {
                 // HEAP DEALLOCATION
@@ -9303,7 +9303,7 @@ pub(crate) fn ffchdu(fptr: &mut fitsfile, status: &mut c_int) -> c_int {
             /* free the tile-compressed image cache, if it exists */
             if !fptr.Fptr.tilerow.is_null() {
                 // HEAP DEALLOCATION
-                let mut tilestruct_lock = TILE_STRUCTS.lock().unwrap();
+                let mut tilestruct_lock = crate::lock_global(&TILE_STRUCTS);
                 let _ = tilestruct_lock.remove_entry(&(&raw const fptr.Fptr as usize));
                 drop(tilestruct_lock);
 
@@ -10013,7 +10013,7 @@ fn grow_headstart(fptr: &mut fitsfile) -> Result<(), c_int> {
     // error path the pointer is unchanged, on the success path it may have
     // moved.  Either way `fptr` must own it again.
     let (p, len, cap) = vec_into_raw_parts(vo);
-    let mut allocations = ALLOCATIONS.lock().unwrap();
+    let mut allocations = crate::lock_global(&ALLOCATIONS);
     allocations.remove(&(old_ptr as usize));
     allocations.insert(p as usize, (len, cap));
     drop(allocations);
@@ -13475,7 +13475,7 @@ mod tests {
 
     #[test]
     fn test_ffmkky_safe() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         let mut card: [c_char; FLEN_CARD] = [0; FLEN_CARD];
         let mut status: c_int = 0;
 
@@ -13559,7 +13559,7 @@ mod tests {
     #[test]
     fn test_ffxmsg_basic_operations() {
         unsafe {
-            let _g = TEST_LOCK.lock().unwrap();
+            let _g = crate::lock_global(&TEST_LOCK);
             // Clear any existing messages first
             ffxmsg(DEL_ALL, ptr::null_mut());
 
@@ -13583,7 +13583,7 @@ mod tests {
     #[test]
     fn test_ffxmsg_marker_functionality() {
         unsafe {
-            let _g = TEST_LOCK.lock().unwrap();
+            let _g = crate::lock_global(&TEST_LOCK);
             // Clear any existing messages
             ffxmsg(DEL_ALL, ptr::null_mut());
 

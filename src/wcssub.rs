@@ -251,7 +251,7 @@ pub fn fits_read_wcstab_safe(
 
         // HEAP ALLOCATION
         let (ptr, l, c) = vec_into_raw_parts(tmp);
-        ALLOCATIONS.lock().unwrap().insert(ptr as usize, (l, c));
+        crate::lock_global(&ALLOCATIONS).insert(ptr as usize, (l, c));
 
         // SAFETY: `arrayp` is a valid output pointer supplied by the caller.
         unsafe {
@@ -1641,10 +1641,7 @@ pub fn ffgtwcs_safe(
     strncat_safe(&mut hdr[cptr..], blanks, 77);
 
     let (header_ptr, l, c) = vec_into_raw_parts(hdr);
-    ALLOCATIONS
-        .lock()
-        .unwrap()
-        .insert(header_ptr as usize, (l, c));
+    crate::lock_global(&ALLOCATIONS).insert(header_ptr as usize, (l, c));
 
     *header = header_ptr;
 

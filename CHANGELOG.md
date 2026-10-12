@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- A panic no longer breaks every later operation in the process. The tables that
+  stand in for CFITSIO's globals (open disk and memory files, the error stack,
+  allocations, ...) recovered from a poisoned lock only under `FFLOCK`; elsewhere
+  one panic made each later call panic with `PoisonError`, and a file closed while
+  unwinding then aborted the process.
+
 ## [0.470.5] - 2026.10.05
 
 ### Fixed

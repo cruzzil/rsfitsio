@@ -40,14 +40,14 @@ static M_V: Mutex<c_uint> = Mutex::new(362436069);
 
 /// Set u and v state variables
 fn simplerng_setstate(u: c_uint, v: c_uint) {
-    *M_U.lock().unwrap() = u;
-    *M_V.lock().unwrap() = v;
+    *crate::lock_global(&M_U) = u;
+    *crate::lock_global(&M_V) = v;
 }
 
 /// Retrieve u and v state variables
 fn simplerng_getstate(u: &mut c_uint, v: &mut c_uint) {
-    *u = *M_U.lock().unwrap();
-    *v = *M_V.lock().unwrap();
+    *u = *crate::lock_global(&M_U);
+    *v = *crate::lock_global(&M_V);
 }
 
 /// Srand() equivalent to seed the two state variables
@@ -84,8 +84,8 @@ pub(crate) fn simplerng_getuniform() -> f64 {
 fn simplerng_getuint() -> c_uint {
     /* WARNING: no option for calling rand() here.  Will need to provide
     a scalar to make the uint in the [0,UINT_MAX] range */
-    let mut m_u_local = M_U.lock().unwrap();
-    let mut m_v_local = M_V.lock().unwrap();
+    let mut m_u_local = crate::lock_global(&M_U);
+    let mut m_v_local = crate::lock_global(&M_V);
     simplerng_getuint_pr(&mut m_u_local, &mut m_v_local)
 }
 
@@ -105,8 +105,8 @@ pub(crate) fn simplerng_getnorm() -> f64 {
     static SAVED: Mutex<bool> = Mutex::new(false);
     static Y: Mutex<f64> = Mutex::new(0.0);
 
-    let mut saved = SAVED.lock().unwrap();
-    let mut y = Y.lock().unwrap();
+    let mut saved = crate::lock_global(&SAVED);
+    let mut y = crate::lock_global(&Y);
 
     if !*saved {
         u1 = simplerng_getuniform();
@@ -173,7 +173,7 @@ fn simplerng_poisson_large(lambda: f64) -> c_int {
         old_lambda: -999999.0,
     });
 
-    let mut params = PARAMS.lock().unwrap();
+    let mut params = crate::lock_global(&PARAMS);
 
     if lambda != params.old_lambda {
         let c = 0.767 - 3.36 / lambda;
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_state() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         let mut u: c_uint = 0;
         let mut v: c_uint = 0;
         simplerng_setstate(12345, 67890);
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_srand() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         let (mut u1, mut v1, mut u2, mut v2) = (0u32, 0u32, 0u32, 0u32);
         simplerng_srand(42);
         simplerng_getstate(&mut u1, &mut v1);
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_getuint() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         simplerng_srand(12345);
         let u1 = simplerng_getuint();
         let u2 = simplerng_getuint();
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_getuniform_pr() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         let mut u: c_uint = 12345;
         let mut v: c_uint = 67890;
         for _ in 0..100 {
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_uniform() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         simplerng_srand(12345);
         for _ in 0..1000 {
             let val = simplerng_getuniform();
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_norm() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         let mut sum = 0.0;
         let mut sumsq = 0.0;
         let n = 10000;
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn test_poisson() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         let mut sum = 0.0;
         let lambda = 5.0;
         let n = 10000;
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn test_poisson_large() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         let mut sum = 0.0;
         let lambda = 50.0;
         let n = 10000;
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_logfactorial() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::lock_global(&TEST_LOCK);
         assert!((simplerng_logfactorial(0) - 0.0).abs() <= 0.001);
         assert!((simplerng_logfactorial(1) - 0.0).abs() <= 0.001);
         assert!((simplerng_logfactorial(5) - 120.0_f64.ln()).abs() <= 0.001);

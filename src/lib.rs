@@ -201,6 +201,18 @@ pub(crate) fn FFLOCK<'a>() -> MutexGuard<'a, bool> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Lock one of the process-wide tables that stand in for CFITSIO's globals
+/// (open files, memory files, the error stack, ...).
+///
+/// Recovers from a poisoned mutex rather than panicking, as [`FFLOCK`] does.
+/// The C has no notion of poisoning: a panic while one file holds a table
+/// leaves at worst that file's entry inconsistent, but propagating the
+/// PoisonError would make every later operation on every file in the process
+/// panic as well.
+pub(crate) fn lock_global<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Leave a critical section entered with [`FFLOCK`], as CFITSIO's `FFUNLOCK`
 /// macro does.
 pub(crate) fn FFUNLOCK(p: MutexGuard<'_, bool>) {

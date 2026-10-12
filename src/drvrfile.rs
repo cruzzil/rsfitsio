@@ -52,7 +52,7 @@ pub(crate) struct diskdriver {
 pub(crate) static HANDLE_TABLE: Mutex<Vec<diskdriver>> = Mutex::new(Vec::new());
 
 pub(crate) fn file_init() -> c_int {
-    let mut h = HANDLE_TABLE.lock().unwrap();
+    let mut h = crate::lock_global(&HANDLE_TABLE);
 
     h.clear();
     h.resize_with(NMAXFILES, ||
@@ -98,7 +98,7 @@ pub(crate) fn file_open(filename: &mut [c_char], rwmode: c_int, handle: &mut c_i
        the new copy.
     */
 
-    let mut ofile = FILE_OUTFILE.lock().unwrap();
+    let mut ofile = crate::lock_global(&FILE_OUTFILE);
 
     if ofile[0] != 0 {
         /* open the original file, with readonly access */
@@ -148,7 +148,7 @@ pub(crate) fn file_open(filename: &mut [c_char], rwmode: c_int, handle: &mut c_i
         ofile[0] = 0;
     } else {
         //let h = handleTable.lock().unwrap();
-        let h = HANDLE_TABLE.lock().unwrap();
+        let h = crate::lock_global(&HANDLE_TABLE);
         *handle = -1;
         ii = 0;
         while ii < NMAXFILES {
@@ -169,7 +169,7 @@ pub(crate) fn file_open(filename: &mut [c_char], rwmode: c_int, handle: &mut c_i
     }
 
     //let mut h = handleTable.lock().unwrap();
-    let mut h = HANDLE_TABLE.lock().unwrap();
+    let mut h = crate::lock_global(&HANDLE_TABLE);
     h[*handle as usize].fileptr = diskfile;
     h[*handle as usize].currentpos = 0;
     h[*handle as usize].last_io_op = IO_SEEK;
@@ -403,7 +403,7 @@ pub(crate) fn file_create(filename: &mut [c_char; FLEN_FILENAME], handle: &mut c
     let mut ii = 0;
     {
         //let h = handleTable.lock().unwrap();
-        let h = HANDLE_TABLE.lock().unwrap();
+        let h = crate::lock_global(&HANDLE_TABLE);
         while ii < NMAXFILES {
             /* find empty slot in table */
             if (h[ii]).fileptr.is_none() {
@@ -454,7 +454,7 @@ pub(crate) fn file_create(filename: &mut [c_char; FLEN_FILENAME], handle: &mut c
         Ok(x) => {
             //let mut h = handleTable.lock().unwrap();
 
-            let mut h = HANDLE_TABLE.lock().unwrap();
+            let mut h = crate::lock_global(&HANDLE_TABLE);
             (h[ii]).fileptr = Some(x);
             (h[ii]).currentpos = 0;
             (h[ii]).last_io_op = IO_SEEK;
@@ -468,7 +468,7 @@ pub(crate) fn file_create(filename: &mut [c_char; FLEN_FILENAME], handle: &mut c
 pub(crate) fn file_truncate(handle: c_int, filesize: usize) -> c_int {
     if HAVE_FTRUNCATE {
         let handle = handle as usize;
-        let mut h = HANDLE_TABLE.lock().unwrap();
+        let mut h = crate::lock_global(&HANDLE_TABLE);
 
         if let Some(f) = &mut h[handle].fileptr {
             // If either set_len or seek fails, we should return -1
@@ -488,7 +488,7 @@ pub(crate) fn file_truncate(handle: c_int, filesize: usize) -> c_int {
 /// return the size of the file in bytes
 pub(crate) fn file_size(handle: c_int, filesize: &mut usize) -> c_int {
     //let h = handleTable.lock().unwrap();
-    let mut h = HANDLE_TABLE.lock().unwrap();
+    let mut h = crate::lock_global(&HANDLE_TABLE);
 
     if let Some(diskfile) = &mut (h[handle as usize].fileptr) {
         let position1 = diskfile.stream_position().unwrap(); /* save current postion */
@@ -504,7 +504,7 @@ pub(crate) fn file_size(handle: c_int, filesize: &mut usize) -> c_int {
 /// close the file
 pub(crate) fn file_close(handle: c_int) -> c_int {
     //let mut h = handleTable.lock().unwrap();
-    let mut h = HANDLE_TABLE.lock().unwrap();
+    let mut h = crate::lock_global(&HANDLE_TABLE);
 
     if let Some(f) = &mut h[handle as usize].fileptr {
         let e = f.sync_all();
@@ -530,7 +530,7 @@ pub(crate) fn file_remove(filename: &[c_char]) -> c_int {
 
 /// flush the file
 pub(crate) fn file_flush(handle: c_int) -> c_int {
-    let mut h = HANDLE_TABLE.lock().unwrap();
+    let mut h = crate::lock_global(&HANDLE_TABLE);
 
     if let Some(f) = &mut h[handle as usize].fileptr
         && f.flush().is_err()
@@ -553,7 +553,7 @@ pub(crate) fn file_flush(handle: c_int) -> c_int {
 /// seek to position relative to start of the file
 pub(crate) fn file_seek(handle: c_int, offset: LONGLONG) -> c_int {
     //let mut h = handleTable.lock().unwrap();
-    let mut h = HANDLE_TABLE.lock().unwrap();
+    let mut h = crate::lock_global(&HANDLE_TABLE);
 
     file_seek_internal(&mut h[handle as usize], offset as u64)
 }
@@ -579,7 +579,7 @@ fn file_seek_internal(handle: &mut diskdriver, offset: u64) -> c_int {
 #[allow(clippy::std_instead_of_core)]
 pub(crate) fn file_read(hdl: c_int, buffer: &mut [u8], nbytes: usize) -> c_int {
     //let h = handleTable.lock().unwrap();
-    let mut h = HANDLE_TABLE.lock().unwrap();
+    let mut h = crate::lock_global(&HANDLE_TABLE);
     let handle = &mut h[hdl as usize];
 
     if handle.last_io_op == IO_WRITE {
@@ -627,7 +627,7 @@ pub(crate) fn file_read(hdl: c_int, buffer: &mut [u8], nbytes: usize) -> c_int {
 /// write bytes at the current position in the file
 pub(crate) fn file_write(hdl: c_int, buffer: &[u8], nbytes: usize) -> c_int {
     //let h = handleTable.lock().unwrap();
-    let mut h = HANDLE_TABLE.lock().unwrap();
+    let mut h = crate::lock_global(&HANDLE_TABLE);
     let handle = &mut h[hdl as usize];
 
     if handle.last_io_op == IO_READ {
@@ -669,13 +669,13 @@ pub(crate) fn file_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &m
         && check_is_file_fits(indiskfile.as_mut().unwrap()) == 0
     {
         ffpmsg_str("Input file is not a FITS file.  Cannot create output file.");
-        ffpmsg_slice(&*FILE_OUTFILE.lock().unwrap());
+        ffpmsg_slice(&*crate::lock_global(&FILE_OUTFILE));
         return FILE_NOT_OPENED;
     }
 
     /* name of the output uncompressed file is stored in the */
     /* global variable called 'file_outfile'.                */
-    let mut ofile = FILE_OUTFILE.lock().unwrap();
+    let mut ofile = crate::lock_global(&FILE_OUTFILE);
     let mut cptr = ofile.as_slice();
     if cptr[0] == b'!' as c_char {
         /* clobber any existing file with the same name */
@@ -829,7 +829,7 @@ pub(crate) fn file_checkfile(
     infile: &mut [c_char; FLEN_FILENAME],
     outfile: &mut [c_char; FLEN_FILENAME],
 ) -> c_int {
-    let mut ofile = FILE_OUTFILE.lock().unwrap();
+    let mut ofile = crate::lock_global(&FILE_OUTFILE);
 
     /* special case: if file:// driver, check if the file is compressed */
     if file_is_compressed(infile) != 0 {
@@ -948,5 +948,40 @@ pub(crate) fn fits_stream_write(hdl: c_int, buffer: &[u8], nbytes: usize) -> c_i
     match std::io::stdout().write_all(&buffer[..nbytes]) {
         Ok(()) => 0,
         Err(_) => WRITE_ERROR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HANDLE_TABLE;
+    use crate::aliases::rust_api::{fits_close_file, fits_create_file, fits_create_img};
+    use crate::c_types::c_int;
+    use crate::fitsio::BYTE_IMG;
+    use crate::helpers::testhelpers::with_temp_file;
+    use alloc::ffi::CString;
+    use bytemuck::cast_slice;
+
+    /// A panic while the disk file table is locked must not break every later
+    /// disk file operation in the process.
+    #[test]
+    fn test_disk_files_survive_poisoned_handle_table() {
+        let _ = std::thread::spawn(|| {
+            let _h = HANDLE_TABLE.lock();
+            panic!("poison the handle table");
+        })
+        .join();
+        assert!(HANDLE_TABLE.is_poisoned());
+
+        with_temp_file(|filename| {
+            let name = CString::new(filename).unwrap();
+            let mut status: c_int = 0;
+            let mut fptr = None;
+            fits_create_file(&mut fptr, cast_slice(name.as_bytes_with_nul()), &mut status);
+            assert_eq!(status, 0);
+            let mut f = fptr.unwrap();
+            fits_create_img(&mut f, BYTE_IMG, 0, &[], &mut status);
+            fits_close_file(f, &mut status);
+            assert_eq!(status, 0);
+        });
     }
 }
