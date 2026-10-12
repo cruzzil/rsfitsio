@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A panic no longer breaks every later operation in the process. The tables that
+  stand in for CFITSIO's globals (open disk and memory files, the error stack,
+  allocations, ...) recovered from a poisoned lock only under `FFLOCK`; elsewhere
+  one panic made each later call panic with `PoisonError`, and a file closed while
+  unwinding then aborted the process.
 - `fits_get_bcolparms` (`ffgbcl`, `ffgbclll`) reports a variable length column's
   datatype as e.g. `PE` rather than `P`. `dtype` is now `[c_char; 3]`, room for the
   `P` prefix, the type and the nul, as the C writes.

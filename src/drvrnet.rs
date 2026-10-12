@@ -14,7 +14,7 @@ static NET_TIMEOUT: Mutex<c_uint> = Mutex::new(360); /* in seconds */
 static CURL_VERBOSE: Mutex<c_int> = Mutex::new(0);
 
 pub(crate) fn fits_net_timeout(sec: c_int) -> c_int {
-    let mut net_timeout = NET_TIMEOUT.lock().unwrap();
+    let mut net_timeout = crate::lock_global(&NET_TIMEOUT);
     /* If sec is 0 or negative, treat this as a 'get' call. */
     if sec > 0 {
         *net_timeout = sec as c_uint;
@@ -24,7 +24,7 @@ pub(crate) fn fits_net_timeout(sec: c_int) -> c_int {
 }
 
 pub(crate) fn fits_dwnld_prog_bar(flag: c_int) {
-    let mut download_progress = SHOW_FITS_DOWNLOAD_PROGRESS.lock().unwrap();
+    let mut download_progress = crate::lock_global(&SHOW_FITS_DOWNLOAD_PROGRESS);
     if flag == 0 {
         *download_progress = 0;
     } else {
@@ -33,7 +33,7 @@ pub(crate) fn fits_dwnld_prog_bar(flag: c_int) {
 }
 
 pub(crate) fn https_set_verbose(flag: c_int) {
-    let mut curl_verbose = CURL_VERBOSE.lock().unwrap();
+    let mut curl_verbose = crate::lock_global(&CURL_VERBOSE);
     if flag == 0 {
         *curl_verbose = 0;
     } else {

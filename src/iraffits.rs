@@ -236,7 +236,7 @@ pub(crate) fn iraf2mem(
     irafrdimage(&mut b_ptr, buffsize, filesize, status);
 
     let (raw_ptr, l, c) = vec_into_raw_parts(b_ptr);
-    ALLOCATIONS.lock().unwrap().insert(raw_ptr as usize, (l, c));
+    crate::lock_global(&ALLOCATIONS).insert(raw_ptr as usize, (l, c));
 
     *buffptr = raw_ptr;
 
@@ -551,7 +551,7 @@ fn irafrdimage(
     }
 
     /* Byte-reverse image, if necessary */
-    if *SWAPDATA.lock().unwrap() {
+    if *crate::lock_global(&SWAPDATA) {
         let image = &mut fitsheader[image_offset..];
         irafswap(bitpix, image, nbimage);
     }
@@ -727,19 +727,19 @@ fn iraftofits(
     /* Set the SWAPHEAD global first (note: irafgeti4 reads SWAPHEAD, so the
     guard must be released before any irafgeti4 call to avoid a deadlock) */
     {
-        let mut swaphead = SWAPHEAD.lock().unwrap();
+        let mut swaphead = crate::lock_global(&SWAPHEAD);
         *swaphead = isirafswapped(irafheader, impixtype);
     }
 
     if imhver == 1 {
-        let swaphead = *SWAPHEAD.lock().unwrap();
-        *SWAPDATA.lock().unwrap() = swaphead; /* vers 1 data has same swapness as header */
+        let swaphead = *crate::lock_global(&SWAPHEAD);
+        *crate::lock_global(&SWAPDATA) = swaphead; /* vers 1 data has same swapness as header */
     } else {
         let v = irafgeti4(irafheader, IM2_SWAPPED) != 0;
-        *SWAPDATA.lock().unwrap() = v;
+        *crate::lock_global(&SWAPDATA) = v;
     }
 
-    let swapdata = *SWAPDATA.lock().unwrap();
+    let swapdata = *crate::lock_global(&SWAPDATA);
 
     /*  Set pixel size in FITS header */
     pixtype = irafgeti4(irafheader, impixtype);
@@ -991,7 +991,7 @@ fn iraftofits(
     } else {
         imu = LEN_IMHDR;
         let chead = irafheader;
-        let ib: usize = if *SWAPHEAD.lock().unwrap() { 0 } else { 1 };
+        let ib: usize = if *crate::lock_global(&SWAPHEAD) { 0 } else { 1 };
 
         for k in 0..80 {
             fitsline[k] = bb(b' ');
@@ -1212,7 +1212,7 @@ fn irafgeti4(irafheader: &[c_char], offset: usize) -> c_int {
     let mut itemp: [c_int; 1] = [0; 1];
     let ctemp: &mut [c_char] = cast_slice_mut(&mut itemp);
 
-    let swaphead = SWAPHEAD.lock().unwrap();
+    let swaphead = crate::lock_global(&SWAPHEAD);
 
     if machswap() != *swaphead {
         ctemp[3] = cheader[offset];

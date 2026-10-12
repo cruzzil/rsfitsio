@@ -153,7 +153,7 @@ fn release_owned_cell(d: &mut memdriver) {
 /// allocation.
 unsafe fn owned_realloc(ptr: *mut c_char, newsize: usize) -> *mut c_char {
     unsafe {
-        let mut allocations = ALLOCATIONS.lock().unwrap();
+        let mut allocations = crate::lock_global(&ALLOCATIONS);
 
         let mut v = if ptr.is_null() {
             if newsize == 0 {
@@ -316,7 +316,7 @@ pub(crate) fn mem_create_comp_unsafe(
             return status;
         }
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
         m[*handle as usize].fileptr = diskfile;
 
         0
@@ -340,7 +340,7 @@ pub(crate) fn mem_openmem(
 ) -> c_int {
     *handle = -1;
 
-    let mut m = MEM_TABLE.lock().unwrap();
+    let mut m = crate::lock_global(&MEM_TABLE);
     //let m = &mut memTable;
     let mut ii = 0;
     while ii < NMAXFILES {
@@ -391,7 +391,7 @@ fn zeroed_vec(len: usize) -> Option<Vec<c_char>> {
 pub(crate) fn mem_createmem(msize: usize, handle: &mut c_int) -> c_int {
     *handle = -1;
 
-    let mut m = MEM_TABLE.lock().unwrap();
+    let mut m = crate::lock_global(&MEM_TABLE);
     //let m = &mut memTable;
     let mut ii = 0;
     while ii < NMAXFILES {
@@ -434,7 +434,7 @@ pub(crate) fn mem_createmem(msize: usize, handle: &mut c_int) -> c_int {
             return FILE_NOT_OPENED;
         };
         let (p, l, c) = vec_into_raw_parts(v);
-        ALLOCATIONS.lock().unwrap().insert(p as usize, (l, c));
+        crate::lock_global(&ALLOCATIONS).insert(p as usize, (l, c));
         unsafe { *m[ii].memaddrptr = p };
     }
 
@@ -452,7 +452,7 @@ pub(crate) fn mem_truncate_unsafe(handle: c_int, filesize: usize) -> c_int {
     unsafe {
         let handle = handle as usize;
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
         //let m = &mut memTable;
 
         /* call the memory reallocation function, if defined */
@@ -497,7 +497,7 @@ pub(crate) fn stdin_checkfile(
     _infile: &mut [c_char; FLEN_FILENAME],
     outfile: &mut [c_char; FLEN_FILENAME],
 ) -> c_int {
-    let mut s = STDIN_OUTFILE.lock().unwrap();
+    let mut s = crate::lock_global(&STDIN_OUTFILE);
     //let s = &mut stdin_outfile;
 
     if strlen_safe(outfile) > 0 {
@@ -516,7 +516,7 @@ pub(crate) fn stdin_checkfile(
 pub(crate) fn stdin_open(filename: &mut [c_char], rwmode: c_int, handle: &mut c_int) -> c_int {
     let mut status: c_int = 0;
 
-    let mut s = STDIN_OUTFILE.lock().unwrap();
+    let mut s = crate::lock_global(&STDIN_OUTFILE);
     //let s = &mut stdin_outfile;
 
     if s[0] != 0 {
@@ -579,7 +579,7 @@ pub(crate) fn stdin_open(filename: &mut [c_char], rwmode: c_int, handle: &mut c_
                 if status != 0 {
                     ffpmsg_str("failed to copy stdin into memory (stdin_open)");
                     // HEAP DEALLOCATION
-                    let m = MEM_TABLE.lock().unwrap();
+                    let m = crate::lock_global(&MEM_TABLE);
                     let ms = *m[*handle as usize].memsizeptr;
                     _ = Vec::from_raw_parts(*m[*handle as usize].memaddrptr, ms, ms);
                 }
@@ -598,7 +598,7 @@ pub(crate) unsafe fn stdin2mem(hd: c_int) -> c_int {
 
         let simple = b"SIMPLE";
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
 
         let mut memptr = *m[hd as usize].memaddrptr;
         let mut memsize = *m[hd as usize].memsizeptr;
@@ -760,7 +760,7 @@ pub(crate) fn stdout_close_unsafe(handle: c_int) -> c_int {
     unsafe {
         let mut status: c_int = 0;
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
 
         /* Copy from memory to standard out.
         DEVIATION: the C fwrite()s to the CRT's stdout, which on windows is in
@@ -1002,7 +1002,7 @@ pub(crate) fn mem_compress_open(filename: &mut [c_char], rwmode: c_int, hdl: &mu
             return status;
         }
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
 
         /* if we allocated too much memory initially, then free it */
         if *(m[*hdl as usize].memsizeptr) > ((m[*hdl as usize].fitsfilesize as usize) + 256) {
@@ -1060,7 +1060,7 @@ pub(crate) unsafe fn mem_compress_stdin_open(
             return status;
         }
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
 
         /* if we allocated too much memory initially, then free it */
         if *(m[*hdl as usize].memsizeptr) > ((m[*hdl as usize].fitsfilesize as usize) + 256) {
@@ -1099,7 +1099,7 @@ pub(crate) fn mem_iraf_open(filename: &mut [c_char], _rwmode: c_int, hdl: &mut c
         IRAF conversion (and any error cleanup, e.g. mem_close_free) can safely
         re-lock MEM_TABLE without deadlocking */
         let (memaddrptr, memsizeptr) = {
-            let m = MEM_TABLE.lock().unwrap();
+            let m = crate::lock_global(&MEM_TABLE);
             (
                 m[*hdl as usize].memaddrptr,
                 core::ptr::from_mut::<usize>(m[*hdl as usize].memsizeptr.as_mut().unwrap()),
@@ -1121,7 +1121,7 @@ pub(crate) fn mem_iraf_open(filename: &mut [c_char], _rwmode: c_int, hdl: &mut c
             return status;
         }
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
         m[*hdl as usize].currentpos = 0; /* save starting position */
         m[*hdl as usize].fitsfilesize = filesize as LONGLONG; /* and initial file size  */
 
@@ -1290,7 +1290,7 @@ pub(crate) fn mem_rawfile_open(filename: &mut [c_char], rwmode: c_int, hdl: &mut
             return status;
         }
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
 
         /* open this piece of memory as a new FITS file */
 
@@ -1391,7 +1391,7 @@ pub(crate) unsafe fn mem_uncompress2mem<T: Read + AsRawFd>(
         let mut status = 0;
         /* uncompress file into memory */
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
 
         if strstr_safe(filename, cs!(c".Z")).is_some() {
             let raw_file_handle = {
@@ -1427,7 +1427,7 @@ pub(crate) unsafe fn mem_uncompress2mem<T: Read + AsRawFd>(
                 self-deadlock, then re-acquire it for the bookkeeping below. */
                 drop(m);
                 bzip2uncompress2mem(filename, raw_file_handle, hdl, &mut finalsize, &mut status);
-                m = MEM_TABLE.lock().unwrap();
+                m = crate::lock_global(&MEM_TABLE);
             }
         } else {
             /* the C passes realloc; the slot's buffer is our own Vec */
@@ -1461,7 +1461,7 @@ pub(crate) unsafe fn mem_uncompress2mem<T: Read + AsRawHandle>(
         let mut status = 0;
         /* uncompress file into memory */
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
 
         if strstr_safe(filename, cs!(c".Z")).is_some() {
             let raw_file_handle = unsafe {
@@ -1517,7 +1517,7 @@ pub(crate) unsafe fn mem_uncompress2mem<T: Read + AsRawHandle>(
 /// return the size of the file; only called when the file is first opened
 pub(crate) fn mem_size(handle: c_int, filesize: &mut usize) -> c_int {
     let handle = handle as usize;
-    let m = MEM_TABLE.lock().unwrap();
+    let m = crate::lock_global(&MEM_TABLE);
     //let m = &memTable;
 
     *filesize = m[handle].fitsfilesize as usize;
@@ -1528,7 +1528,7 @@ pub(crate) fn mem_size(handle: c_int, filesize: &mut usize) -> c_int {
 pub(crate) fn mem_close_free_unsafe(handle: c_int) -> c_int {
     unsafe {
         let handle = handle as usize;
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
         //let m = &mut memTable;
 
         let memsize = *m[handle].memsizeptr;
@@ -1539,7 +1539,7 @@ pub(crate) fn mem_close_free_unsafe(handle: c_int) -> c_int {
         an IRAF conversion failed before writing the buffer pointer). */
         let dataptr = *(m[handle].memaddrptr);
         if !dataptr.is_null() {
-            if let Some((l, c)) = ALLOCATIONS.lock().unwrap().remove(&(dataptr as usize)) {
+            if let Some((l, c)) = crate::lock_global(&ALLOCATIONS).remove(&(dataptr as usize)) {
                 _ = Vec::from_raw_parts(dataptr, l, c);
             } else {
                 _ = Vec::from_raw_parts(dataptr, memsize, memsize);
@@ -1554,7 +1554,7 @@ pub(crate) fn mem_close_free_unsafe(handle: c_int) -> c_int {
 ///  close the memory file but do not free the memory.
 pub(crate) fn mem_close_keep(handle: c_int) -> c_int {
     let handle = handle as usize;
-    let mut m = MEM_TABLE.lock().unwrap();
+    let mut m = crate::lock_global(&MEM_TABLE);
     //let m = &mut memTable;
 
     release_owned_cell(&mut m[handle]);
@@ -1569,7 +1569,7 @@ pub(crate) fn mem_close_comp_unsafe(handle: c_int) -> c_int {
 
         /* compress file in  memory to a .gz disk file */
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
         let in_mem = slice::from_raw_parts(
             *m[handle as usize].memaddrptr,
             *m[handle as usize].memsizeptr,
@@ -1604,7 +1604,7 @@ pub(crate) fn mem_close_comp_unsafe(handle: c_int) -> c_int {
 /// seek to position relative to start of the file.
 pub(crate) fn mem_seek(handle: c_int, offset: LONGLONG) -> c_int {
     let handle = handle as usize;
-    let mut m = MEM_TABLE.lock().unwrap();
+    let mut m = crate::lock_global(&MEM_TABLE);
     //let m = &mut memTable;
 
     if offset > m[handle].fitsfilesize {
@@ -1619,7 +1619,7 @@ pub(crate) fn mem_read_unsafe(hdl: c_int, buffer: &mut [u8], nbytes: usize) -> c
     unsafe {
         let hdl = hdl as usize;
         let nbytes = nbytes as LONGLONG;
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
         //let m = &mut memTable;
 
         if m[hdl].currentpos + nbytes > m[hdl].fitsfilesize {
@@ -1646,7 +1646,7 @@ pub(crate) fn mem_write_unsafe(hdl: c_int, buffer: &[u8], nbytes: usize) -> c_in
     unsafe {
         let hdl: usize = hdl.try_into().unwrap();
         let nbytes = nbytes as LONGLONG;
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
 
         if (m[hdl].currentpos + nbytes) as usize > *(m[hdl].memsizeptr) {
             if m[hdl].owned_cell.is_null() && m[hdl].mem_realloc.is_none() {
@@ -1705,7 +1705,7 @@ pub(crate) unsafe fn mem_zuncompress_and_write(hdl: c_int, buffer: &[u8], nbytes
         let mut newsize = 0;
         let mut status = 0;
 
-        let mut m = MEM_TABLE.lock().unwrap();
+        let mut m = crate::lock_global(&MEM_TABLE);
 
         if m[hdl as usize].currentpos != 0 {
             ffpmsg_str("cannot append uncompressed data (mem_uncompress_and_write)");

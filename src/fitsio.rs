@@ -1085,16 +1085,10 @@ impl FITSfile {
             f_iobuffer.into_boxed_slice().try_into().unwrap();
 
         let (f_headstart, l, c) = vec_into_raw_parts(f_headstart);
-        ALLOCATIONS
-            .lock()
-            .unwrap()
-            .insert(f_headstart as usize, (l, c));
+        crate::lock_global(&ALLOCATIONS).insert(f_headstart as usize, (l, c));
 
         let (f_filename, l, c) = vec_into_raw_parts(f_filename);
-        ALLOCATIONS
-            .lock()
-            .unwrap()
-            .insert(f_filename as usize, (l, c));
+        crate::lock_global(&ALLOCATIONS).insert(f_filename as usize, (l, c));
 
         // HEAP ALLOCATION
         /* allocate FITSfile structure and initialize = 0 */
@@ -1289,9 +1283,7 @@ impl FITSfile {
     /// is the minimum `new` reserves, and the size `Drop` falls back to when
     /// the entry is missing.
     pub(crate) fn get_filename_as_mut_slice(&mut self) -> &mut [c_char] {
-        let len = ALLOCATIONS
-            .lock()
-            .unwrap()
+        let len = crate::lock_global(&ALLOCATIONS)
             .get(&(self.filename as usize))
             .map_or(32, |&(l, _)| l);
 
@@ -1305,7 +1297,7 @@ impl Drop for FITSfile {
         unsafe {
             if !self.filename.is_null() {
                 // HEAP DEALLOCATION
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(self.filename as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -1316,7 +1308,7 @@ impl Drop for FITSfile {
             }
 
             if !self.headstart.is_null() {
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(self.headstart as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -1331,7 +1323,7 @@ impl Drop for FITSfile {
             }
 
             if !self.tableptr.is_null() {
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(self.tableptr as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -1346,7 +1338,7 @@ impl Drop for FITSfile {
             }
 
             if !self.tilerow.is_null() {
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(self.tilerow as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -1361,7 +1353,7 @@ impl Drop for FITSfile {
             }
 
             if !self.tiledatasize.is_null() {
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(self.tiledatasize as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -1376,7 +1368,7 @@ impl Drop for FITSfile {
             }
 
             if !self.tiletype.is_null() {
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(self.tiletype as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -1391,7 +1383,7 @@ impl Drop for FITSfile {
             }
 
             if !self.tiledata.is_null() {
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(self.tiledata as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -1406,7 +1398,7 @@ impl Drop for FITSfile {
             }
 
             if !self.tilenullarray.is_null() {
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(self.tilenullarray as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION
@@ -1421,7 +1413,7 @@ impl Drop for FITSfile {
             }
 
             if !self.tileanynull.is_null() {
-                let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+                let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
                 let alloc = alloc_lock.remove(&(self.tileanynull as usize));
                 if let Some((l, c)) = alloc {
                     // HEAP DEALLOCATION

@@ -1593,7 +1593,8 @@ pub fn ffgtop_safe(
                         cast_slice::<u8, c_char>(CStr::from_ptr(tkeyvalue).to_bytes_with_nul());
                     let n = bytes.len().min(FLEN_FILENAME);
                     keyvalue[..n].copy_from_slice(&bytes[..n]);
-                    if let Some((l, c)) = ALLOCATIONS.lock().unwrap().remove(&(tkeyvalue as usize))
+                    if let Some((l, c)) =
+                        crate::lock_global(&ALLOCATIONS).remove(&(tkeyvalue as usize))
                     {
                         let _ = Vec::from_raw_parts(tkeyvalue, l, c);
                     }
@@ -2515,7 +2516,7 @@ pub fn ffgtam_safe(
                                     strcpy_safe(&mut grplc, val);
                                 }
                                 if let Some((l, c)) =
-                                    ALLOCATIONS.lock().unwrap().remove(&(tgrplc as usize))
+                                    crate::lock_global(&ALLOCATIONS).remove(&(tgrplc as usize))
                                 {
                                     let _ = Vec::from_raw_parts(tgrplc, l, c);
                                 }
@@ -2936,7 +2937,7 @@ pub fn ffgmng_safe(mfptr: &mut fitsfile, ngroups: &mut c_long, status: &mut c_in
                         fits_insert_key_longstr(mfptr, &newKeyword, val, Some(&comment), status);
                         fits_write_key_longwarn(mfptr, status);
                         if let Some((l, c)) =
-                            ALLOCATIONS.lock().unwrap().remove(&(tkeyvalue as usize))
+                            crate::lock_global(&ALLOCATIONS).remove(&(tkeyvalue as usize))
                         {
                             let _ = Vec::from_raw_parts(tkeyvalue, l, c);
                         }
@@ -4454,7 +4455,7 @@ pub fn ffgmrm_safe(
                                     strcpy_safe(&mut grplc, cast_slice(cs.to_bytes_with_nul()));
                                 }
                                 if let Some((l, c)) =
-                                    ALLOCATIONS.lock().unwrap().remove(&(tgrplc as usize))
+                                    crate::lock_global(&ALLOCATIONS).remove(&(tgrplc as usize))
                                 {
                                     let _ = Vec::from_raw_parts(tgrplc, l, c);
                                 }
@@ -6282,7 +6283,7 @@ pub(crate) fn ffgtcpr(
                         fits_insert_key_longstr(outfptr, &card, val, Some(&comment), status);
                         fits_write_key_longwarn(outfptr, status);
                         if let Some((l, c)) =
-                            ALLOCATIONS.lock().unwrap().remove(&(tkeyvalue as usize))
+                            crate::lock_global(&ALLOCATIONS).remove(&(tkeyvalue as usize))
                         {
                             let _ = Vec::from_raw_parts(tkeyvalue, l, c);
                         }

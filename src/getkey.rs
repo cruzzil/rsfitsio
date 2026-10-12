@@ -1656,7 +1656,7 @@ pub fn ffgkls_safe(
         v[0] = 0;
 
         let (p, l, c) = vec_into_raw_parts(v);
-        ALLOCATIONS.lock().unwrap().insert(p as usize, (l, c));
+        crate::lock_global(&ALLOCATIONS).insert(p as usize, (l, c));
         *value = p;
     } else {
         /* allocate space,  plus 1 for null */
@@ -1717,7 +1717,7 @@ pub fn ffgkls_safe(
         }
 
         let (p, l, c) = vec_into_raw_parts(v);
-        ALLOCATIONS.lock().unwrap().insert(p as usize, (l, c));
+        crate::lock_global(&ALLOCATIONS).insert(p as usize, (l, c));
         *value = p;
     }
     *status
@@ -2260,7 +2260,7 @@ pub unsafe fn fffree_safe(value: *mut c_void, status: &mut c_int) -> c_int {
 
     if !value.is_null() {
         // HEAP DEALLOCATION
-        let mut alloc_lock = ALLOCATIONS.lock().unwrap();
+        let mut alloc_lock = crate::lock_global(&ALLOCATIONS);
         let alloc = alloc_lock.remove(&(value as usize));
         if let Some((l, c)) = alloc {
             // HEAP DEALLOCATION
@@ -6729,10 +6729,7 @@ pub fn ffh2st_safe(fptr: &mut fitsfile, header: &mut *mut c_char, status: &mut c
     hdr[(nrec as LONGLONG * IOBUFLEN) as usize] = 0;
 
     let (header_ptr, l, c) = vec_into_raw_parts(hdr);
-    ALLOCATIONS
-        .lock()
-        .unwrap()
-        .insert(header_ptr as usize, (l, c));
+    crate::lock_global(&ALLOCATIONS).insert(header_ptr as usize, (l, c));
 
     *header = header_ptr;
 
@@ -6904,10 +6901,7 @@ pub fn ffhdr2str_safe(
     hdr.shrink_to_fit();
 
     let (header_ptr, l, c) = vec_into_raw_parts(hdr);
-    ALLOCATIONS
-        .lock()
-        .unwrap()
-        .insert(header_ptr as usize, (l, c));
+    crate::lock_global(&ALLOCATIONS).insert(header_ptr as usize, (l, c));
 
     *header = header_ptr;
 

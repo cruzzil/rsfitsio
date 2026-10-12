@@ -2712,7 +2712,7 @@ fn imcomp_compress_tile(
         which double-freed memory still owned by the TileStruct (and, for
         columns other than the first, used the wrong element stride). */
         let key = &raw const outfptr.Fptr as usize;
-        let mut tilestruct_lock = TILE_STRUCTS.lock().unwrap();
+        let mut tilestruct_lock = crate::lock_global(&TILE_STRUCTS);
         if let Some(tilestruct) = tilestruct_lock.get_mut(&key)
             && c_long::from(tilestruct.tilerow[tilecol as usize]) == row
         {
@@ -8154,7 +8154,7 @@ fn imcomp_decompress_tile(
             // for a fresh key (the normal case) and `Some(old)` only when it
             // replaces a stale entry left over from a previously-freed fptr that
             // happened to reuse this address; both are fine, so ignore the result.
-            TILE_STRUCTS.lock().unwrap().insert(ptr_addr, tile_struct);
+            crate::lock_global(&TILE_STRUCTS).insert(ptr_addr, tile_struct);
         }
     }
 
@@ -8165,7 +8165,7 @@ fn imcomp_decompress_tile(
         tilecol = (c_long::from(nrow) - 1)
             % (((((infptr.Fptr).znaxis[0] - 1) / ((infptr.Fptr).tilesize[0])) as c_long) + 1);
 
-        let mut tilestruct_lock = TILE_STRUCTS.lock().unwrap();
+        let mut tilestruct_lock = crate::lock_global(&TILE_STRUCTS);
 
         let tilestruct = tilestruct_lock
             .get_mut(&(&raw const infptr.Fptr as usize))
@@ -9859,7 +9859,7 @@ fn imcomp_decompress_tile(
     if !(infptr.Fptr).tilerow.is_null() {
         /* make sure cache has been allocated */
         if (infptr.Fptr).znaxis[0] != (infptr.Fptr).tilesize[0] || (infptr.Fptr).tilesize[1] != 1 {
-            let mut tilestruct_lock = TILE_STRUCTS.lock().unwrap();
+            let mut tilestruct_lock = crate::lock_global(&TILE_STRUCTS);
 
             let tilestruct = tilestruct_lock
                 .get_mut(&(&raw const infptr.Fptr as usize))

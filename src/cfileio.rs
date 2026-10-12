@@ -287,7 +287,7 @@ pub fn ffomem_safe(
         let _ = Box::into_raw(f);
     }
 
-    if *NEED_TO_INITIALIZE.lock().unwrap() {
+    if *crate::lock_global(&NEED_TO_INITIALIZE) {
         /* this is called only once */
         *status = fits_init_cfitsio_safe();
 
@@ -1133,7 +1133,7 @@ pub fn ffopen_safe(
 
     let mut writecopy = false; /* have we made a write-able copy of the input file? */
 
-    if *NEED_TO_INITIALIZE.lock().unwrap() {
+    if *crate::lock_global(&NEED_TO_INITIALIZE) {
         /* this is called only once */
         *status = fits_init_cfitsio_safe();
     }
@@ -5559,7 +5559,7 @@ pub fn ffinit_safe(fptr: &mut Option<Box<fitsfile>>, name: &[c_char], status: &m
         *status = 0;
     }
 
-    if *NEED_TO_INITIALIZE.lock().unwrap() {
+    if *crate::lock_global(&NEED_TO_INITIALIZE) {
         /* this is called only once */
         *status = fits_init_cfitsio_safe();
     }
@@ -5799,7 +5799,7 @@ pub fn ffimem_safe(
         let _ = Box::into_raw(f);
     }
 
-    if *NEED_TO_INITIALIZE.lock().unwrap() {
+    if *crate::lock_global(&NEED_TO_INITIALIZE) {
         /* this is called only once */
         *status = fits_init_cfitsio_safe();
     }
@@ -5907,7 +5907,7 @@ pub fn fits_init_cfitsio_safe() -> c_int {
     let lock = FFLOCK(); /* lockout other threads while executing this critical */
     /* section of code  */
 
-    if !*NEED_TO_INITIALIZE.lock().unwrap() {
+    if !*crate::lock_global(&NEED_TO_INITIALIZE) {
         /* already initialized? */
         FFUNLOCK(lock);
         return 0;
@@ -8909,7 +8909,7 @@ pub unsafe extern "C" fn ffimport_file(
         if let Some(safe_contents) = safe_contents {
             // HEAP ALLOCATION
             let (p, l, c) = vec_into_raw_parts(safe_contents);
-            ALLOCATIONS.lock().unwrap().insert(p as usize, (l, c));
+            crate::lock_global(&ALLOCATIONS).insert(p as usize, (l, c));
 
             *contents = p;
         }
