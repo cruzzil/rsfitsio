@@ -21,9 +21,11 @@
 use core::ffi::CStr;
 use core::slice;
 use core::{cmp, mem, ptr};
+use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::sync::{Mutex, OnceLock};
+use std::thread::{self, ThreadId};
 
 use crate::c_types::{FILE, c_char, c_int, c_long, c_short, c_void};
 use crate::drvrnet::{fits_dwnld_prog_bar, fits_net_timeout, https_set_verbose};
@@ -101,7 +103,7 @@ use crate::relibc::header::stdio::{sscanf_d, sscanf_ld};
 use crate::scalnull::ffpscl_safe;
 use crate::wrappers::*;
 use crate::zcompress::uncompress2mem_from_mem;
-use crate::{FFLOCK, FFUNLOCK};
+use crate::{FFLOCK, FFUNLOCK, lock_global};
 use crate::{bb, cs};
 use crate::{buffers::*, raw_to_slice};
 use crate::{fitsio::*, int_snprintf};
@@ -175,6 +177,27 @@ pub static DRIVER_TABLE: OnceLock<Vec<fitsdriver>> = OnceLock::new();
 /// is opened a second time so that both handles share one [`FITSfile`].
 pub static mut FPTR_TABLE: [*mut FITSfile; NMAXFILES] =
     [core::ptr::null_mut::<FITSfile>(); NMAXFILES];
+
+/// What `fits_already_open` needs to know about an [`FPTR_TABLE`] entry
+/// without touching the `FITSfile`, which another thread may be using.
+struct FptrOwner {
+    /// The thread that opened the file.
+    thread: ThreadId,
+    /// Copy of the `FITSfile`'s `filename`, which is fixed once it is opened.
+    filename: CString,
+    /// Copy of the `FITSfile`'s `noextsyntax`, likewise fixed.
+    noextsyntax: c_int,
+}
+
+/// The owner of each [`FPTR_TABLE`] entry, at the same index.
+///
+/// DEVIATION: CFITSIO lets any thread attach to an already-open FITSfile.
+/// Here handles are not `Send` and share their `FITSfile` without locking, so
+/// `fits_already_open` only reuses an entry opened on the calling thread, and
+/// refuses a READWRITE open of a file that another thread has open (a file
+/// opened for writing must be physically opened only once). Written and read
+/// only under `FFLOCK`, together with `FPTR_TABLE`.
+static FPTR_THREAD: Mutex<[Option<FptrOwner>; NMAXFILES]> = Mutex::new([const { None }; NMAXFILES]);
 
 /// True until the library has been initialized and the drivers registered.
 pub static NEED_TO_INITIALIZE: Mutex<bool> = Mutex::new(true);
@@ -2110,6 +2133,13 @@ pub(crate) fn fits_store_Fptr(Fptr: *mut FITSfile, status: &mut c_int) -> c_int 
         unsafe {
             if FPTR_TABLE[ii].is_null() {
                 FPTR_TABLE[ii] = Fptr;
+                /* SAFETY: Fptr is the live FITSfile just opened on this thread. */
+                let f = &*Fptr;
+                lock_global(&FPTR_THREAD)[ii] = Some(FptrOwner {
+                    thread: thread::current().id(),
+                    filename: f.get_filename_as_cstr().to_owned(),
+                    noextsyntax: f.noextsyntax,
+                });
                 break;
             };
         }
@@ -2133,6 +2163,7 @@ pub unsafe extern "C" fn fits_clear_Fptr(Fptr: *mut FITSfile, status: *mut c_int
         for ii in 0..NMAXFILES {
             if core::ptr::eq(FPTR_TABLE[ii], Fptr) {
                 FPTR_TABLE[ii] = ptr::null_mut();
+                lock_global(&FPTR_THREAD)[ii] = None;
                 break;
             };
         }
@@ -2153,12 +2184,31 @@ fn fits_clear_Fptr_safer(Fptr: *mut FITSfile, status: &mut c_int) -> c_int {
         unsafe {
             if FPTR_TABLE[ii] == Fptr {
                 FPTR_TABLE[ii] = ptr::null_mut();
+                lock_global(&FPTR_THREAD)[ii] = None;
                 break;
             };
         }
     }
     FFUNLOCK(lock);
     *status
+}
+
+/// DEVIATION: a READWRITE open of a file another thread already has open
+/// fails, rather than attaching to its FITSfile; see [`FPTR_THREAD`]. Returns
+/// true, with `status` set, if the matching entry belongs to another thread.
+fn refuse_other_thread(
+    owner: &FptrOwner,
+    this_thread: ThreadId,
+    url: &[c_char],
+    status: &mut c_int,
+) -> bool {
+    if owner.thread == this_thread {
+        return false;
+    }
+    ffpmsg_str("cannot reopen file READWRITE when already opened by another thread");
+    ffpmsg_slice(url);
+    *status = FILE_NOT_OPENED;
+    true
 }
 
 /// Check if the file to be opened is already open.  If so, then attach to it.
@@ -2230,20 +2280,24 @@ pub(crate) fn fits_already_open(
     {
         return *status;
     };
+    /* DEVIATION: only attach to a file opened on this thread; see FPTR_THREAD.
+    The name and syntax flag of each open file come from FPTR_THREAD, so this
+    loop never reads a FITSfile that another thread may be writing, and a
+    match opened on another thread is refused below. */
+    let this_thread = thread::current().id();
+    let owners = lock_global(&FPTR_THREAD);
     for ii in 0..NMAXFILES {
         /* check every buffer */
 
-        /* SAFETY: FPTR_TABLE is a `static mut`; a non-null entry always points
-        at a live FITSfile owned by an open handle.  Taking a shared reference
-        rather than `&mut` keeps this from aliasing the live FptrRef handles --
-        every use below is a read. */
-        if let Some(oldFptr) = unsafe { FPTR_TABLE[ii].as_ref() } {
+        /* SAFETY: FPTR_TABLE is a `static mut`, only accessed under FFLOCK,
+        which our caller holds. */
+        if let (false, Some(oldFptr)) = (unsafe { FPTR_TABLE[ii].is_null() }, owners[ii].as_ref()) {
             if oldFptr.noextsyntax != 0 {
                 /* old urltype must be "file://" */
                 if fits_strcasecmp(urltype, cs!(c"FILE://")) == 0 {
                     /* compare tmpinfile to adjusted oldFptr->filename */
 
-                    let ofn = cast_slice(oldFptr.get_filename_as_cstr().to_bytes_with_nul());
+                    let ofn = cast_slice(oldFptr.filename.to_bytes_with_nul());
 
                     /* This shouldn't be possible, but check anyway */
                     if strlen_safe(ofn) > FLEN_FILENAME - 1 {
@@ -2252,7 +2306,7 @@ pub(crate) fn fits_already_open(
                         return *status;
                     }
 
-                    let ofn = cast_slice(oldFptr.get_filename_as_cstr().to_bytes_with_nul());
+                    let ofn = cast_slice(oldFptr.filename.to_bytes_with_nul());
                     strcpy_safe(&mut oldinfile, ofn);
                     if standardize_path(&mut oldinfile, status) != 0 {
                         return *status;
@@ -2262,6 +2316,12 @@ pub(crate) fn fits_already_open(
                         /* if infile is not noextsyn, must check that it is not
                         using filters of any kind */
                         if noextsyn || (rowfilter[0] == 0 && binspec[0] == 0 && colspec[0] == 0) {
+                            if refuse_other_thread(oldFptr, this_thread, url, status) {
+                                return *status;
+                            }
+                            /* SAFETY: opened on this thread, so no other thread
+                            is using it; every use is a read. */
+                            let oldFptr = unsafe { &*FPTR_TABLE[ii] };
                             if mode == READWRITE as c_int && oldFptr.writemode == READONLY as c_int
                             {
                                 /*
@@ -2284,7 +2344,7 @@ pub(crate) fn fits_already_open(
 
                 /* end if old file has disabled extended syntax */
             } else {
-                let filename = cast_slice(oldFptr.get_filename_as_cstr().to_bytes_with_nul());
+                let filename = cast_slice(oldFptr.filename.to_bytes_with_nul());
 
                 ffiurl_safe(
                     filename,
@@ -2300,7 +2360,7 @@ pub(crate) fn fits_already_open(
 
                 if *status > 0 {
                     ffpmsg_str("could not parse the previously opened filename: (ffopen)");
-                    ffpmsg_cstr(oldFptr.get_filename_as_cstr());
+                    ffpmsg_cstr(&oldFptr.filename);
                     return *status;
                 }
 
@@ -2334,6 +2394,12 @@ pub(crate) fn fits_already_open(
                     /* filtering specs are given and are identical, and */
                     /* the same extension is specified */
                     {
+                        if refuse_other_thread(oldFptr, this_thread, url, status) {
+                            return *status;
+                        }
+                        /* SAFETY: opened on this thread, so no other thread is
+                        using it; every use is a read. */
+                        let oldFptr = unsafe { &*FPTR_TABLE[ii] };
                         if mode == READWRITE as c_int && oldFptr.writemode == READONLY as c_int {
                             /*
                               cannot assume that a file previously opened with READONLY
@@ -2354,6 +2420,7 @@ pub(crate) fn fits_already_open(
             } /* end if old file recognizes extended syntax */
         } /* end if old fptr exists */
     } /* end loop over NMAXFILES */
+    drop(owners);
 
     if let Some(iMatch) = iMatch {
         /* SAFETY: iMatch was set from a non-null FPTR_TABLE slot above, so it
@@ -14627,12 +14694,78 @@ mod tests {
             assert!(f2.is_some());
 
             // Both should point to same underlying file.
-            let p1: *const _ = &raw const *f1.as_deref().unwrap().Fptr;
-            let p2: *const _ = &raw const *f2.as_deref().unwrap().Fptr;
+            let p1 = f1.as_deref().unwrap().Fptr.as_ptr();
+            let p2 = f2.as_deref().unwrap().Fptr.as_ptr();
             assert_eq!(p1, p2);
+            assert_eq!(f1.as_deref().unwrap().Fptr.open_count, 2);
 
             fits_close_file(f1.take().unwrap(), &mut status);
             fits_close_file(f2.take().unwrap(), &mut status);
+        });
+    }
+
+    #[test]
+    fn test_fits_already_open_other_thread() {
+        // A file must be physically opened for writing only once, and a
+        // FITSfile is never shared across threads (fitsfile is not Send), so a
+        // READWRITE open of a file another thread has open fails.
+        with_temp_file(|filename| {
+            let mut status: c_int = 0;
+            let name = to_buf(filename);
+            let naxes: [c_long; 1] = [10];
+
+            let mut f: Option<Box<fitsfile>> = None;
+            fits_create_file(&mut f, &name, &mut status);
+            fits_write_imghdr(f.as_deref_mut().unwrap(), BYTE_IMG, 1, &naxes, &mut status);
+            fits_close_file(f.take().unwrap(), &mut status);
+            assert_eq!(status, 0, "setup");
+
+            let (opened_tx, opened_rx) = std::sync::mpsc::channel::<()>();
+            let (refused_tx, refused_rx) = std::sync::mpsc::channel::<()>();
+            let name = &name;
+            let open_rw = || {
+                let mut status: c_int = 0;
+                let mut fb: Option<Box<fitsfile>> = None;
+                ffopen_safe(&mut fb, name, READWRITE, &mut status);
+                (fb, status)
+            };
+            std::thread::scope(|s| {
+                s.spawn(move || {
+                    let mut status: c_int = 0;
+                    let mut fa: Option<Box<fitsfile>> = None;
+                    ffopen_safe(&mut fa, name, READWRITE, &mut status);
+                    assert_eq!(status, 0, "thread A open");
+                    opened_tx.send(()).unwrap();
+
+                    // Keep the file open until thread B has been refused.
+                    refused_rx.recv().unwrap();
+                    let mut naxis: c_int = 0;
+                    ffgidm_safe(fa.as_deref_mut().unwrap(), &mut naxis, &mut status);
+                    assert_eq!((status, naxis), (0, 1), "thread A read");
+                    fits_close_file(fa.take().unwrap(), &mut status);
+                    assert_eq!(status, 0, "thread A close");
+                });
+                s.spawn(move || {
+                    opened_rx.recv().unwrap();
+                    let (fb, status) = open_rw();
+                    assert_eq!(status, FILE_NOT_OPENED, "thread B open");
+                    assert!(fb.is_none());
+                    refused_tx.send(()).unwrap();
+                });
+            });
+
+            // Thread A has closed it, so another thread can now open it.
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    let (mut fb, mut status) = open_rw();
+                    assert_eq!(status, 0, "open after close");
+                    let mut naxis: c_int = 0;
+                    ffgidm_safe(fb.as_deref_mut().unwrap(), &mut naxis, &mut status);
+                    assert_eq!((status, naxis), (0, 1), "read after close");
+                    fits_close_file(fb.take().unwrap(), &mut status);
+                    assert_eq!(status, 0, "close after reopen");
+                });
+            });
         });
     }
 

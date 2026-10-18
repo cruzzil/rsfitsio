@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `fits_open_memfile`'s `mem_realloc` parameter is now an `Option`, in both the
   Rust API and the C ABI (where NULL is now accepted).
+- **Breaking:** `fitsfile` (and so `Box<fitsfile>`) is no longer `Send`. Opening
+  a file read-write a second time shares the already-open `FITSfile` between the
+  two handles, which are used without locking, so sending one to another thread
+  allowed a data race from safe code. Rust code that moved open files between
+  threads must open them on the thread that uses them instead.
+- Opening a file read-write that is already open shares its `FITSfile` only with
+  handles on the same thread. A read-write open from another thread while the
+  file is open fails with `FILE_NOT_OPENED`, instead of attaching to a
+  `FITSfile` it could race with. Read-only opens are unchanged.
 
 ## [0.470.7] - 2026.10.18
 
