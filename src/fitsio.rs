@@ -1445,6 +1445,24 @@ impl Drop for FITSfile {
 ///
 /// `#[repr(transparent)]` over a `NonNull`, so the layout is a single non-null
 /// pointer exactly as `Box<FITSfile>` was and `fitsfile` keeps its C ABI.
+///
+/// Deliberately not `Send` (nor `Sync`; `NonNull` is neither). Opening the
+/// same path read-write again reuses the already-open `FITSfile`
+/// (`fits_already_open`), so two `fitsfile`s can share one `FITSfile` and both
+/// deref it mutably with no locking. If a `fitsfile` could move to another
+/// thread, safe code could then mutate one `FITSfile` from two threads at once.
+/// Keeping the handle `!Send` makes `fitsfile` and `Box<fitsfile>` `!Send`,
+/// so every handle to a `FITSfile` stays on the thread that opened it.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<rsfitsio::fitsio::fitsfile>();
+/// ```
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<Box<rsfitsio::fitsio::fitsfile>>();
+/// ```
 #[repr(transparent)]
 pub struct FptrRef(ptr::NonNull<FITSfile>);
 
@@ -1505,9 +1523,6 @@ impl DerefMut for FptrRef {
     }
 }
 
-// SAFETY: matches the Send/Sync story Box<FITSfile> had; the handle adds no
-// interior mutability of its own.
-unsafe impl Send for FptrRef {}
 
 /// Stores basic HDU information. This is the handle every routine in the API
 /// takes.
