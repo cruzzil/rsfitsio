@@ -393,14 +393,15 @@ static NAN_STR_UPPER: &str = "NAN";
 
 unsafe fn pop_int_raw(format: &mut *const u8) -> Option<usize> {
     unsafe {
-        let mut int = None;
+        let mut int: Option<usize> = None;
         while let Some(digit) = (**format as char).to_digit(10) {
             *format = format.add(1);
-            if int.is_none() {
-                int = Some(0);
-            }
-            *int.as_mut().unwrap() *= 10;
-            *int.as_mut().unwrap() += digit as usize;
+            // Saturate: a width or precision this large is rejected by the caller.
+            int = Some(
+                int.unwrap_or(0)
+                    .saturating_mul(10)
+                    .saturating_add(digit as usize),
+            );
         }
         int
     }
@@ -453,8 +454,13 @@ fn pad<W: Write>(
     range: Range<usize>,
 ) -> io::Result<()> {
     if current_side {
-        for _ in range {
-            w.write_all(&[pad_char])?;
+        // Write in blocks: a field can be up to INT_MAX wide.
+        let block = [pad_char; 4096];
+        let mut left = range.len();
+        while left > 0 {
+            let n = left.min(block.len());
+            w.write_all(&block[..n])?;
+            left -= n;
         }
     }
     Ok(())
@@ -785,6 +791,8 @@ unsafe fn inner_printf<W: Write>(w: W, format: &CStr, mut ap: CustomVaList) -> i
                     Number::Index(i) => {
                         positional.insert(i - 1, (FmtKind::Signed, IntKind::Int));
                     }
+                    // A field width or precision over INT_MAX is EOVERFLOW in C.
+                    Number::Static(n) if *n > c_int::MAX as usize => return Ok(-1),
                     Number::Static(_) => (),
                 }
             }
