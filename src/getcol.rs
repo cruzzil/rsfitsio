@@ -28,7 +28,7 @@ use bytemuck::{cast_slice, cast_slice_mut};
 use crate::NullValue;
 use crate::bytes_per_datatype;
 use crate::fitscore::{
-    ffgidm_safe, ffgisz_safe, ffgiszll_safe, ffgnrwll_safe, ffgtclll_safe,
+    ffgdesll_safe, ffgidm_safe, ffgisz_safe, ffgiszll_safe, ffgnrwll_safe, ffgtclll_safe,
     fits_is_compressed_image_safe,
 };
 use crate::fitscore::{ffpmsg_slice, ffpmsg_str};
@@ -2958,22 +2958,10 @@ pub fn ffgcv_safe(
             }
         }
     } else if datatype == TSTRING {
-        /* Each `char *` the caller handed us points at a buffer it sized from
-        the column's display width -- the only per-string size the C API ever
-        implies, since the `char **` carries no lengths.  Ask ffgcdw for that
-        width instead of assuming FLEN_VALUE, which is the maximum length of a
-        *keyword value* and has nothing to do with a column: it is larger than
-        a correctly sized buffer for most columns, so claiming it both builds a
-        slice running past the caller's allocation and raises the bound ffgcls
-        writes to, since ffgcls derives its own bounds from this same ffgcdw
-        width.  Every ffgcls path writes at most `width` characters plus the
-        terminating NUL (the complex path halves the width back and spends the
-        rest on the "(re,im)" punctuation), so width + 1 is exact. */
-        let mut dwidth: c_int = 0;
-        if ffgcdw_safe(fptr, colnum, &mut dwidth, status) > 0 {
-            return *status;
-        }
-        let item_len = dwidth as usize + 1;
+        let (nstrings, item_len) = match tstring_item_len(fptr, colnum, firstrow, nelem, status) {
+            Some(v) => v,
+            None => return *status,
+        };
 
         // SAFETY: for TSTRING the caller's buffer holds an array of `char *`,
         // as in the C. Derive the pointer with as_mut_ptr() rather than
@@ -2987,7 +2975,7 @@ pub fn ffgcv_safe(
             #[allow(clippy::cast_ptr_alignment)]
             let p = array.as_mut_ptr().cast::<*mut c_char>();
             debug_assert!(p.is_aligned());
-            let array = slice::from_raw_parts_mut(p, nelem as usize);
+            let array = slice::from_raw_parts_mut(p, nstrings);
             let mut v_array = Vec::new();
             for item in array {
                 let array_item = slice::from_raw_parts_mut(*item, item_len);
@@ -3680,22 +3668,10 @@ pub fn ffgcf_safe(
             status,
         );
     } else if datatype == TSTRING {
-        /* Each `char *` the caller handed us points at a buffer it sized from
-        the column's display width -- the only per-string size the C API ever
-        implies, since the `char **` carries no lengths.  Ask ffgcdw for that
-        width instead of assuming FLEN_VALUE, which is the maximum length of a
-        *keyword value* and has nothing to do with a column: it is larger than
-        a correctly sized buffer for most columns, so claiming it both builds a
-        slice running past the caller's allocation and raises the bound ffgcls
-        writes to, since ffgcls derives its own bounds from this same ffgcdw
-        width.  Every ffgcls path writes at most `width` characters plus the
-        terminating NUL (the complex path halves the width back and spends the
-        rest on the "(re,im)" punctuation), so width + 1 is exact. */
-        let mut dwidth: c_int = 0;
-        if ffgcdw_safe(fptr, colnum, &mut dwidth, status) > 0 {
-            return *status;
-        }
-        let item_len = dwidth as usize + 1;
+        let (nstrings, item_len) = match tstring_item_len(fptr, colnum, firstrow, nelem, status) {
+            Some(v) => v,
+            None => return *status,
+        };
 
         // SAFETY: for TSTRING the caller's buffer holds an array of `char *`,
         // as in the C, so it carries pointer alignment even though the
@@ -3705,7 +3681,7 @@ pub fn ffgcf_safe(
             #[allow(clippy::cast_ptr_alignment)]
             let p = array.as_mut_ptr().cast::<*mut c_char>();
             debug_assert!(p.is_aligned());
-            let array = slice::from_raw_parts_mut(p, nelem as usize);
+            let array = slice::from_raw_parts_mut(p, nstrings);
             let mut v_array = Vec::new();
             for item in array {
                 let array_item = slice::from_raw_parts_mut(*item, item_len);
@@ -3731,6 +3707,51 @@ pub fn ffgcf_safe(
     }
 
     *status
+}
+
+/// Number of caller-supplied `char *` buffers ffgcv/ffgcf read a TSTRING
+/// column into, and the length of each, NUL included.
+///
+/// Each `char *` the caller handed us points at a buffer it sized from
+/// the column's display width -- the only per-string size the C API ever
+/// implies, since the `char **` carries no lengths.  Ask ffgcdw for that
+/// width instead of assuming FLEN_VALUE, which is the maximum length of a
+/// *keyword value* and has nothing to do with a column: it is larger than
+/// a correctly sized buffer for most columns, so claiming it both builds a
+/// slice running past the caller's allocation and raises the bound ffgcls
+/// writes to, since ffgcls derives its own bounds from this same ffgcdw
+/// width.  Every ffgcls path writes at most `width` characters plus the
+/// terminating NUL (the complex path halves the width back and spends the
+/// rest on the "(re,im)" punctuation), so width + 1 is exact.
+///
+/// A variable length string column is the exception: ffgcls ignores the
+/// display width (1 for `1PA`) and reads the whole string in `firstrow`, whose
+/// length is that row's descriptor, so the caller sized its buffer from the
+/// descriptor and so must we.  It reads that one string whatever `nelem` is,
+/// and callers pass a single `char *` but often `nelem` = the string length,
+/// so only the first pointer may be touched.
+fn tstring_item_len(
+    fptr: &mut fitsfile,
+    colnum: c_int,
+    firstrow: LONGLONG,
+    nelem: LONGLONG,
+    status: &mut c_int,
+) -> Option<(usize, usize)> {
+    let mut dwidth: c_int = 0;
+    if ffgcdw_safe(fptr, colnum, &mut dwidth, status) > 0 {
+        return None;
+    }
+
+    /* ffgcdw has checked colnum and moved to the HDU */
+    if fptr.Fptr.get_tableptr_as_slice()[colnum as usize - 1].tdatatype == -TSTRING {
+        let mut length: LONGLONG = 0;
+        if ffgdesll_safe(fptr, colnum, firstrow, Some(&mut length), None, status) > 0 {
+            return None;
+        }
+        return Some((nelem.min(1) as usize, length as usize + 1));
+    }
+
+    Some((nelem as usize, dwidth as usize + 1))
 }
 
 #[cfg(test)]
@@ -5408,6 +5429,88 @@ mod tests {
             assert_eq!(s2, b"test");
             fits_close_file(f.take().unwrap(), &mut status);
         });
+    }
+
+    /// Write `content` to row 1 of a `1PA` column and read it back through the
+    /// generic TSTRING readers into a buffer sized from the row's descriptor,
+    /// as CFITSIO callers do. ffgcdw reports a width of 1 for `1PA`, so the
+    /// slice must be sized from the descriptor, not the display width. Callers
+    /// such as python-fitsio pass `nelem` = the string length with a single
+    /// `char *`, which CFITSIO allows since it reads one string regardless.
+    fn read_var_string_generic(use_ffgcf: bool, nelem: LONGLONG) {
+        with_temp_file(|filename| {
+            let mut status = 0;
+            let name = to_buf(filename);
+            let content = "hello world";
+
+            let mut f = make_table(&name, "VARSTR", "1PA", 1, &mut status);
+            let w_v = [cc(content)];
+            let w_ref: Vec<&[c_char]> = w_v.iter().map(|v| v.as_slice()).collect();
+            fits_write_col_str(f.as_deref_mut().unwrap(), 1, 1, 1, 1, &w_ref, &mut status);
+            fits_close_file(f.take().unwrap(), &mut status);
+            assert_eq!(status, 0, "setup");
+
+            fits_open_file(&mut f, &name, READONLY, &mut status);
+            fits_movabs_hdu(f.as_deref_mut().unwrap(), 2, None, &mut status);
+
+            let mut buf: Vec<c_char> = vec![0; content.len() + 1];
+            let mut ptrs: [*mut c_char; 1] = [buf.as_mut_ptr()];
+            let ptr_bytes: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    ptrs.as_mut_ptr().cast::<u8>(),
+                    core::mem::size_of_val(&ptrs),
+                )
+            };
+            let mut anynull = -1;
+            if use_ffgcf {
+                let mut nullarray: [c_char; 1] = [0];
+                fits_read_colnull(
+                    f.as_deref_mut().unwrap(),
+                    TSTRING,
+                    1,
+                    1,
+                    1,
+                    nelem,
+                    ptr_bytes,
+                    &mut nullarray,
+                    Some(&mut anynull),
+                    &mut status,
+                );
+            } else {
+                fits_read_col(
+                    f.as_deref_mut().unwrap(),
+                    TSTRING,
+                    1,
+                    1,
+                    1,
+                    nelem,
+                    None,
+                    ptr_bytes,
+                    Some(&mut anynull),
+                    &mut status,
+                );
+            }
+            assert_eq!(status, 0);
+            let s: Vec<u8> = buf
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c as u8)
+                .collect();
+            assert_eq!(s, content.as_bytes());
+            fits_close_file(f.take().unwrap(), &mut status);
+        });
+    }
+
+    #[test]
+    fn test_ffgcv_variable_length_string() {
+        read_var_string_generic(false, 1);
+        read_var_string_generic(false, 11);
+    }
+
+    #[test]
+    fn test_ffgcf_variable_length_string() {
+        read_var_string_generic(true, 1);
+        read_var_string_generic(true, 11);
     }
 
     #[test]
