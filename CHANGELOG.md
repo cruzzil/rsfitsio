@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `fits_open_memfile` (`ffomem`) takes an optional realloc function, as the C
+  does (and as `fits_create_memfile` already did). Faking "no realloc" with a
+  stub returning null made moving past the first HDU of a read-only file fail
+  with `MEMORY_ALLOCATION`.
+
+### Changed
+- `fits_open_memfile`'s `mem_realloc` parameter is now an `Option`, in both the
+  Rust API and the C ABI (where NULL is now accepted).
+
 ## [0.470.7] - 2026.10.18
 
 ### Fixed

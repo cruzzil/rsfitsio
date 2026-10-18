@@ -482,10 +482,13 @@ pub(crate) fn mem_truncate_unsafe(handle: c_int, filesize: usize) -> c_int {
 
             *(m[handle].memaddrptr) = ptr;
             *(m[handle].memsizeptr) = filesize;
-
-            m[handle].currentpos = filesize as LONGLONG;
-            m[handle].fitsfilesize = filesize as LONGLONG;
         }
+
+        /* DEVIATION: without a realloc function the C sets the file size even
+        past the end of the buffer; cap it, so reads stay inside the buffer. */
+        let filesize = filesize.min(*(m[handle].memsizeptr));
+        m[handle].currentpos = filesize as LONGLONG;
+        m[handle].fitsfilesize = filesize as LONGLONG;
 
         0
     }

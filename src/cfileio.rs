@@ -197,7 +197,7 @@ pub(crate) fn fitsio_init_lock() -> c_int {
 /// * `buffptr`     — (I) address of memory pointer
 /// * `buffsize`    — (I) size of buffer, in bytes
 /// * `deltasize`   — (I) increment for future realloc's
-/// * `mem_realloc` — function
+/// * `mem_realloc` — function (None/NULL: the buffer is never reallocated)
 /// * `status`      — (IO) error status
 #[cfg_attr(not(test), unsafe(no_mangle), deprecated)]
 pub unsafe extern "C" fn ffomem(
@@ -207,7 +207,7 @@ pub unsafe extern "C" fn ffomem(
     buffptr: *mut *mut c_void,
     buffsize: *mut usize,
     deltasize: usize,
-    mem_realloc: unsafe extern "C" fn(p: *mut c_void, newsize: usize) -> *mut c_void,
+    mem_realloc: Option<unsafe extern "C" fn(p: *mut c_void, newsize: usize) -> *mut c_void>,
     status: *mut c_int,
 ) -> c_int {
     // FFI WRAPPER
@@ -239,7 +239,7 @@ pub unsafe extern "C" fn ffomem(
 /// * `buffptr`     — (I) address of memory pointer
 /// * `buffsize`    — (I) size of buffer, in bytes
 /// * `deltasize`   — (I) increment for future realloc's
-/// * `mem_realloc` — function
+/// * `mem_realloc` — function (None/NULL: the buffer is never reallocated)
 /// * `status`      — (IO) error status
 pub fn ffomem_safe(
     fptr: &mut Option<Box<fitsfile>>,
@@ -248,7 +248,7 @@ pub fn ffomem_safe(
     buffptr: *mut *mut c_void,
     buffsize: &mut usize,
     deltasize: usize,
-    mem_realloc: unsafe extern "C" fn(p: *mut c_void, newsize: usize) -> *mut c_void,
+    mem_realloc: Option<unsafe extern "C" fn(p: *mut c_void, newsize: usize) -> *mut c_void>,
     status: &mut c_int,
 ) -> c_int {
     let mut driver: c_int = 0;
@@ -327,7 +327,7 @@ pub fn ffomem_safe(
 
     /* call driver routine to open the memory file */
     let lock = FFLOCK(); /* lock this while searching for vacant handle */
-    *status = mem_openmem(buffptr, buffsize, deltasize, Some(mem_realloc), &mut handle);
+    *status = mem_openmem(buffptr, buffsize, deltasize, mem_realloc, &mut handle);
     FFUNLOCK(lock);
 
     if *status > 0 {
@@ -13497,7 +13497,7 @@ mod tests {
             (&raw mut buffer).cast::<*mut c_void>(),
             &mut bufsize,
             0,
-            libc::realloc,
+            Some(libc::realloc),
             &mut status,
         );
         assert_eq!(status, 0, "ffomem failed");
@@ -13518,6 +13518,47 @@ mod tests {
 
         // SAFETY: allocated by the driver through the libc realloc we passed.
         unsafe { libc::free(buffer) };
+    }
+
+    /// A two-HDU file: a 200-row image and the 6-row PLANETS_Binary table.
+    const TWO_HDU_FILE: &[u8] = include_bytes!("../test_files/test_table_read.fits");
+
+    /// With no realloc function, as C callers can pass NULL, a read-only file
+    /// in the caller's memory can still move past its first HDU.
+    #[test]
+    fn test_ffomem_no_realloc_multi_hdu() {
+        let mut status: c_int = 0;
+        let mut bytes = TWO_HDU_FILE.to_vec();
+        let mut buffer: *mut c_void = bytes.as_mut_ptr().cast();
+        let mut bufsize = bytes.len();
+
+        let mut f: Option<Box<fitsfile>> = None;
+        fits_open_memfile(
+            &mut f,
+            &str_to_c_array("mem://"),
+            READONLY,
+            &raw mut buffer,
+            &mut bufsize,
+            0,
+            None,
+            &mut status,
+        );
+        assert_eq!(status, 0, "ffomem failed");
+
+        let mut hdutype: c_int = 0;
+        let mut nrows: c_long = 0;
+        let fr = f.as_deref_mut().unwrap();
+        fits_movabs_hdu(fr, 2, Some(&mut hdutype), &mut status);
+        assert_eq!(status, 0, "moving to HDU 2 failed");
+        assert_eq!(hdutype, BINARY_TBL);
+        fits_read_key_lng(fr, cs!(c"NAXIS2"), &mut nrows, None, &mut status);
+        assert_eq!((status, nrows), (0, 6));
+        fits_close_file(f.take().unwrap(), &mut status);
+        assert_eq!(status, 0);
+
+        // the memkeep driver leaves the caller's buffer alone
+        assert_eq!(bufsize, TWO_HDU_FILE.len());
+        assert_eq!(bytes, TWO_HDU_FILE);
     }
 
     // ------------------------------------------------------------------
