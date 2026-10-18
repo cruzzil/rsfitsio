@@ -20,8 +20,8 @@ use bytemuck::{cast_slice, cast_slice_mut};
 
 use crate::buffers::{ffgbyt, ffgbytoff, ffmbyt_safe};
 use crate::fitscore::{
-    ffcdsp, ffeqtyll_safe, ffgcprll, ffghdt_safe, ffgtcl_safe, ffkeyn_safe, ffmahd_safe,
-    ffpmsg_slice, ffrdef_safe,
+    ffcdsp, ffeqtyll_safe, ffgcprll, ffgdesll_safe, ffghdt_safe, ffgtcl_safe, ffkeyn_safe,
+    ffmahd_safe, ffpmsg_slice, ffrdef_safe,
 };
 use crate::fitsio2::*;
 use crate::getcold::ffgcld;
@@ -71,11 +71,15 @@ pub unsafe extern "C" fn ffgcvs(
 
         let anynul = anynul.as_mut();
 
-        let array = slice::from_raw_parts_mut(array, nelem as usize);
+        let (nstrings, item_len) = match tstring_item_len(fptr, colnum, firstrow, nelem, status) {
+            Some(v) => v,
+            None => return *status,
+        };
+        let array = slice::from_raw_parts_mut(array, nstrings);
 
         let mut v_array = Vec::new();
         for item in array {
-            let array_item = slice::from_raw_parts_mut(*item, FLEN_VALUE);
+            let array_item = slice::from_raw_parts_mut(*item, item_len);
             v_array.push(array_item);
         }
 
@@ -177,10 +181,14 @@ pub unsafe extern "C" fn ffgcfs(
         let fptr = fptr.as_mut().expect(NULL_MSG);
         let anynul = anynul.as_mut();
 
-        let array = slice::from_raw_parts_mut(array, nelem as usize);
+        let (nstrings, item_len) = match tstring_item_len(fptr, colnum, firstrow, nelem, status) {
+            Some(v) => v,
+            None => return *status,
+        };
+        let array = slice::from_raw_parts_mut(array, nstrings);
         let mut v_array = Vec::new();
         for item in array {
-            let array_item = slice::from_raw_parts_mut(*item, FLEN_VALUE);
+            let array_item = slice::from_raw_parts_mut(*item, item_len);
             v_array.push(array_item);
         }
         let nularray = slice::from_raw_parts_mut(nularray, nelem as usize);
@@ -241,6 +249,59 @@ pub fn ffgcfs_safe(
         status,
     );
     *status
+}
+
+/// Number of caller-supplied `char *` buffers ffgcls reads a column into as
+/// strings, and the length of each, NUL included.
+///
+/// The `char **` of the C API carries no lengths, so the caller sized each
+/// buffer from the column, as CFITSIO requires; claim exactly what ffgcls
+/// writes rather than a fixed FLEN_VALUE, which is the maximum length of a
+/// *keyword value* and has nothing to do with a column: a larger claim builds
+/// a slice running past the caller's allocation, a smaller one panics when
+/// ffgcls writes a longer string.
+///
+/// * A string column is copied by ffgcls2 at its TFORM width, whatever
+///   TDISPn says.
+/// * A variable length string column is read whole from `firstrow`, so its
+///   length is that row's descriptor.  ffgcls2 reads that one string whatever
+///   `nelem` is, and callers pass a single `char *` but often `nelem` = the
+///   string length, so only the first pointer may be touched.
+/// * Any other column is formatted at the ffgcdw display width (the complex
+///   path halves the width back and spends the rest on the "(re,im)"
+///   punctuation), so width + 1 is exact.
+pub(crate) fn tstring_item_len(
+    fptr: &mut fitsfile,
+    colnum: c_int,
+    firstrow: LONGLONG,
+    nelem: LONGLONG,
+    status: &mut c_int,
+) -> Option<(usize, usize)> {
+    /* nothing to read: leave ffgcls to return the status, as before */
+    if nelem <= 0 {
+        return Some((0, 0));
+    }
+
+    let mut dwidth: c_int = 0;
+    if ffgcdw_safe(fptr, colnum, &mut dwidth, status) > 0 {
+        return None;
+    }
+
+    /* ffgcdw has checked colnum and moved to the HDU */
+    let colptr = &fptr.Fptr.get_tableptr_as_slice()[colnum as usize - 1];
+    let (tdatatype, twidth) = (colptr.tdatatype, colptr.twidth);
+    if tdatatype == -TSTRING {
+        let mut length: LONGLONG = 0;
+        if ffgdesll_safe(fptr, colnum, firstrow, Some(&mut length), None, status) > 0 {
+            return None;
+        }
+        return Some((nelem.min(1) as usize, length as usize + 1));
+    }
+    if tdatatype == TSTRING {
+        return Some((nelem as usize, twidth as usize + 1));
+    }
+
+    Some((nelem as usize, dwidth as usize + 1))
 }
 
 /// Read an array of string values from a column in the current FITS HDU.
@@ -2101,5 +2162,98 @@ mod tests {
             // "Three" may be truncated to 5 chars
             fits_close_file(f.take().unwrap(), &mut status);
         });
+    }
+
+    /// Write `content` to row 1 of a one-column `tform` table, with an
+    /// optional TDISP1, then read it back through the C entry point ffgcvs
+    /// (or ffgcfs) into a single buffer sized exactly for it, as a C caller
+    /// sizes it from the column. `nelem` is passed through unchanged.
+    fn read_string_c_api(
+        tform: &str,
+        tdisp: Option<&str>,
+        content: &str,
+        nelem: LONGLONG,
+        nul: bool,
+    ) {
+        with_temp_file(|filename| {
+            let mut status = 0;
+            let name = to_buf(filename);
+
+            let mut f = make_table(&name, BINARY_TBL, "SCOL", tform, 1, &mut status);
+            if let Some(tdisp) = tdisp {
+                fits_write_key_str(
+                    f.as_deref_mut().unwrap(),
+                    &cc("TDISP1"),
+                    &cc(tdisp),
+                    None,
+                    &mut status,
+                );
+            }
+            let data = [cc(content)];
+            let data_ref: Vec<&[c_char]> = data.iter().map(|v| v.as_slice()).collect();
+            fits_write_col_str(
+                f.as_deref_mut().unwrap(),
+                1,
+                1,
+                1,
+                1,
+                &data_ref,
+                &mut status,
+            );
+            fits_close_file(f.take().unwrap(), &mut status);
+            assert_eq!(status, 0, "setup");
+
+            fits_open_file(&mut f, &name, READONLY, &mut status);
+            fits_movabs_hdu(f.as_deref_mut().unwrap(), 2, None, &mut status);
+
+            let fptr: *mut fitsfile = f.as_deref_mut().unwrap();
+            let mut buf: Vec<c_char> = vec![0; content.len() + 1];
+            let mut ptrs: [*mut c_char; 1] = [buf.as_mut_ptr()];
+            let mut nularray: Vec<c_char> = vec![0; nelem as usize];
+            let mut anynul: c_int = -1;
+            unsafe {
+                if nul {
+                    super::ffgcfs(
+                        fptr,
+                        1,
+                        1,
+                        1,
+                        nelem,
+                        ptrs.as_mut_ptr(),
+                        nularray.as_mut_ptr(),
+                        &mut anynul,
+                        &mut status,
+                    );
+                } else {
+                    super::ffgcvs(
+                        fptr,
+                        1,
+                        1,
+                        1,
+                        nelem,
+                        core::ptr::null(),
+                        ptrs.as_mut_ptr(),
+                        &mut anynul,
+                        &mut status,
+                    );
+                }
+            }
+            assert_eq!(status, 0);
+            assert_eq!(from_buf(&buf), content);
+            fits_close_file(f.take().unwrap(), &mut status);
+        });
+    }
+
+    #[test]
+    fn test_ffgcvs_ffgcfs_buffer_sizes() {
+        let long = "x".repeat(100);
+        for nul in [false, true] {
+            // Variable length: longer than FLEN_VALUE, nelem 1 and = length.
+            read_string_c_api("1PA", None, &long, 1, nul);
+            read_string_c_api("1PA", None, &long, 100, nul);
+            // Fixed width, with and without a narrower TDISP.
+            read_string_c_api("10A", None, "abcdefghij", 1, nul);
+            read_string_c_api("10A", Some("A5"), "abcdefghij", 1, nul);
+        }
     }
 }
