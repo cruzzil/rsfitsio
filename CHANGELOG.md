@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.470.7] - 2026.10.18
+
+### Fixed
+- Reading a variable length string column (`1PA`) through `fits_read_col` or
+  `fits_read_colnull` with `TSTRING` no longer panics. The output buffers were
+  sized from the column's display width, which is 1 for `1PA`, rather than the
+  row's descriptor, and one buffer was built per `nelem` though only one string
+  is read. Through the C API the panic aborted the process (#149).
+- `fits_read_col_str` (`ffgcvs`) and `fits_read_colnull_str` (`ffgcfs`) no longer
+  assume each output buffer is `FLEN_VALUE` (71) bytes, which ran past shorter
+  buffers and panicked on longer strings. All four string readers now size each
+  buffer from what is actually written: the TFORM width for a string column
+  (a narrower `TDISPn` panicked `fits_read_col`), the row's descriptor for a
+  variable length one, and the display width for other columns (#149).
+
 ## [0.470.6] - 2026.10.13
 
 ### Fixed

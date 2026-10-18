@@ -317,7 +317,7 @@ checksum = "afc02e68b39ec37f0da1fce1c79011a27edb9ad162d6079b79f0502003c78f2b"
 
 [[package]]
 name = "rsfitsio"
-version = "0.470.6"
+version = "0.470.7"
 dependencies = [
  "bytemuck",
  "chrono",
