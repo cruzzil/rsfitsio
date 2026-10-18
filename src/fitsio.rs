@@ -1523,7 +1523,6 @@ impl DerefMut for FptrRef {
     }
 }
 
-
 /// Stores basic HDU information. This is the handle every routine in the API
 /// takes.
 #[repr(C)]
