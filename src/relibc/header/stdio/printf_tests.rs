@@ -478,7 +478,7 @@ mod tests {
 mod glibc_diff {
     use crate::c_types::{c_char, c_int};
     use crate::relibc::header::stdio::printf::{CustomVaList, VaArg};
-    use crate::relibc::header::stdio::snprintf_va;
+    use crate::relibc::header::stdio::{snprintf_cint, snprintf_va};
     use bytemuck::cast_slice;
     use core::ffi::CStr;
 
@@ -665,5 +665,22 @@ mod glibc_diff {
         assert_eq!(ours(c"%#.6g", 999.9995).0, "1000.00");
         assert_eq!(ours(c"%#.6g", 9999995.0).0, "1.00000e+07");
         assert_eq!(ours(c"%#.6g", 9.9999995).0, "10.0000");
+    }
+
+    /// A field width over INT_MAX is EOVERFLOW (-1), as in C, however many
+    /// digits it has; one just under it pads without writing byte by byte.
+    #[test]
+    fn test_huge_field_width() {
+        let mut buf: [c_char; 8] = [0; 8];
+        for fmt in [
+            &b"%3000000000d\0"[..],
+            b"%99999999999999999999999d\0",
+            b"%.3000000000d\0",
+        ] {
+            assert_eq!(snprintf_cint(&mut buf, 8, cast_slice(fmt), 42), -1);
+        }
+        let n = snprintf_cint(&mut buf, 8, cast_slice(b"%2000000000d\0"), 42);
+        assert_eq!(n, 2_000_000_000);
+        assert_eq!(cast_slice::<c_char, u8>(&buf), b"       \0");
     }
 }

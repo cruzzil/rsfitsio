@@ -957,7 +957,8 @@ pub fn ffgcdw_safe(
                 /* find 1st digit */
                 cp += 1;
             }
-            testwidth = strtol_safe::<c_long>(&dispfmt[cp..]).unwrap().0;
+            // No digits, or too many for a long: no valid width, so use TFORMn.
+            testwidth = strtol_safe::<c_long>(&dispfmt[cp..]).map_or(0, |r| r.0);
             if testwidth >= (c_int::MIN as c_long) && testwidth <= (c_int::MAX as c_long) {
                 *width = testwidth as c_int;
                 if tcode >= TCOMPLEX {

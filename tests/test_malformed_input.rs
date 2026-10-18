@@ -9,14 +9,14 @@ mod common;
 mod tests {
     use crate::common::with_temp_file;
     use bytemuck::cast_slice;
-    use libc::{c_int, c_long};
+    use libc::{c_char, c_int, c_long};
     use rsfitsio::aliases::rust_api::*;
     use rsfitsio::fitsio::{
         BAD_C2D, BAD_C2F, BAD_C2I, DATA_DECOMPRESSION_ERR, GZIP_1, HCOMPRESS_1, LONGLONG,
         NUM_OVERFLOW, READONLY, RICE_1, SHORT_IMG, ULONGLONG, fitsfile,
     };
     use rsfitsio::imcompress::fits_set_compression_type_safe;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     /// One 2880-byte header block from 80-column cards.
     fn header(cards: &[&[u8]]) -> Vec<u8> {
@@ -344,5 +344,66 @@ mod tests {
             bytes[at + 6..at + 10].fill(0);
             read_back_fails(name, &bytes);
         });
+    }
+
+    /// A one-row binary table with a single `1J` column holding 42, whose
+    /// TDISP1 keyword has the value `tdisp`.
+    fn int_table_with_tdisp(tdisp: &str) -> Vec<u8> {
+        let tdisp = format!("TDISP1  = '{tdisp}'");
+        let mut bytes = primary(&[]);
+        bytes.extend(header(&[
+            b"XTENSION= 'BINTABLE'",
+            b"BITPIX  =                    8",
+            b"NAXIS   =                    2",
+            b"NAXIS1  =                    4",
+            b"NAXIS2  =                    1",
+            b"PCOUNT  =                    0",
+            b"GCOUNT  =                    1",
+            b"TFIELDS =                    1",
+            b"TFORM1  = '1J      '",
+            tdisp.as_bytes(),
+        ]));
+        let mut data = 42i32.to_be_bytes().to_vec();
+        data.resize(2880, 0);
+        bytes.extend(data);
+        bytes
+    }
+
+    /// TDISPn widths too large for an int, or too long for CFITSIO's
+    /// 20-character buffer: the display width falls back to TFORMn and the
+    /// value cannot be formatted, as C's snprintf fails with EOVERFLOW,
+    /// rather than padding billions of bytes or panicking.
+    #[test]
+    fn test_huge_tdisp_width() {
+        for (tdisp, width, text) in [
+            ("I3000000000", 11, ""),
+            ("I1234567890123456789012345", 11, ""),
+            ("I12345678901234567.8", 11, ""),
+            // No width at all: TFORMn's, and the value printed with %d.
+            ("I", 11, "42"),
+            // Fits in an int: padded, and cut to the 400-byte work buffer.
+            ("I2000000000", 2_000_000_000, &" ".repeat(99)[..]),
+        ] {
+            with_temp_file(|name| {
+                std::fs::write(name, int_table_with_tdisp(tdisp)).unwrap();
+                let mut fptr: Option<Box<fitsfile>> = None;
+                let mut status: c_int = 0;
+                open(name, &mut fptr, &mut status);
+                let f = fptr.as_mut().unwrap();
+                fits_movabs_hdu(f, 2, None, &mut status);
+                assert_eq!(status, 0);
+
+                let mut w = 0;
+                fits_get_col_display_width(f, 1, &mut w, &mut status);
+                assert_eq!((w, status), (width, 0), "{tdisp}");
+
+                let mut buf = [0 as c_char; 100];
+                fits_read_col_str(f, 1, 1, 1, 1, None, &mut [&mut buf[..]], None, &mut status);
+                assert_eq!(status, 0, "{tdisp}");
+                let got = CStr::from_bytes_until_nul(cast_slice(&buf)).unwrap();
+                assert_eq!(got.to_str().unwrap(), text, "{tdisp}");
+                fits_close_file(fptr.take().unwrap(), &mut status);
+            });
+        }
     }
 }
