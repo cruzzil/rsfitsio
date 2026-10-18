@@ -1,0 +1,49 @@
+name: Advisories
+
+# RustSec advisories against Cargo.lock. Separate from CI because it needs a schedule:
+# an advisory can be published against a locked dependency while nothing is pushed.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - .github/workflows/advisories.yml
+  push:
+    branches:
+      - main
+    paths:
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - .github/workflows/advisories.yml
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  advisories:
+    name: Security advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # Only the advisories check runs, so there is no licence allow-list or ban list
+      # to maintain: cargo-deny's defaults apply and no deny.toml is needed. To accept
+      # an advisory that does not affect rsfitsio, add a deny.toml with
+      # [advisories] ignore = ["RUSTSEC-..."] and a comment saying why.
+      - name: Check advisories
+        run: cargo deny --locked check advisories
