@@ -97,7 +97,7 @@ use crate::putkey::{
 use crate::quantize::{
     DitherType, fits_img_stats_int_safe, fits_quantize_double_inplace, fits_quantize_float_inplace,
 };
-use crate::swapproc::{ffswap2, ffswap4, ffswap8};
+use crate::swapproc::{ffswap2, ffswap2_bytes, ffswap4, ffswap4_bytes, ffswap8, ffswap8_bytes};
 
 use crate::zcompress::{compress2mem_from_mem, uncompress2mem_from_mem};
 use crate::{FFLOCK, FFUNLOCK, KeywordDatatype, KeywordDatatypeMut};
@@ -11356,6 +11356,44 @@ pub unsafe extern "C" fn fits_compress_table(
     }
 }
 
+/* The table (un)compressors keep each column, and each set of descriptors, at
+the offset after the ones before it, which need not be a multiple of its own
+width. These read and write such values by their bytes, as casting the buffer
+to the value's type would panic on an unaligned offset. */
+
+/// The values in `bytes`, `N` bytes each, in native byte order.
+fn ne_values<const N: usize, T>(bytes: &[c_char], from_ne_bytes: fn([u8; N]) -> T) -> Vec<T> {
+    cast_slice::<c_char, u8>(bytes)
+        .as_chunks::<N>()
+        .0
+        .iter()
+        .map(|value| from_ne_bytes(*value))
+        .collect()
+}
+
+/// The `idx`th 4-byte integer in `buf`.
+fn get_i32(buf: &[c_char], idx: usize) -> c_int {
+    c_int::from_ne_bytes(
+        cast_slice::<c_char, u8>(&buf[idx * 4..][..4])
+            .try_into()
+            .unwrap(),
+    )
+}
+
+/// The `idx`th 8-byte integer in `buf`.
+fn get_i64(buf: &[c_char], idx: usize) -> LONGLONG {
+    LONGLONG::from_ne_bytes(
+        cast_slice::<c_char, u8>(&buf[idx * 8..][..8])
+            .try_into()
+            .unwrap(),
+    )
+}
+
+/// Set the `idx`th 8-byte integer in `buf`.
+fn set_i64(buf: &mut [c_char], idx: usize, value: LONGLONG) {
+    cast_slice_mut::<c_char, u8>(&mut buf[idx * 8..][..8]).copy_from_slice(&value.to_ne_bytes());
+}
+
 /// Compress a binary table, writing the result to `outfptr`.
 ///
 /// The table is transposed from row-major to column-major in chunks, so that
@@ -11901,9 +11939,9 @@ pub fn fits_compress_table_safe(
                     if BYTESWAPPED {
                         /* byte-swap the integer values into the native machine representation */
                         if rm_colwidth[ii] == 16 {
-                            ffswap8(cast_slice_mut(&mut cdescript), rowspertile * 2);
+                            ffswap8_bytes(cast_slice_mut(&mut cdescript), rowspertile * 2);
                         } else {
-                            ffswap4(cast_slice_mut(&mut cdescript), rowspertile * 2);
+                            ffswap4_bytes(cast_slice_mut(&mut cdescript), rowspertile * 2);
                         }
                     }
 
@@ -11914,14 +11952,14 @@ pub fn fits_compress_table_safe(
 
                         if rm_colwidth[ii] == 16 {
                             /* if Q pointers */
-                            let descriptors: &[LONGLONG] = cast_slice(&cdescript); /* use this for Q type descriptors */
-                            vlalen = descriptors[jj * 2];
-                            vlastart = descriptors[(jj * 2) + 1];
+                            /* use this for Q type descriptors */
+                            vlalen = get_i64(&cdescript, jj * 2);
+                            vlastart = get_i64(&cdescript, (jj * 2) + 1);
                         } else {
                             /* if P pointers */
-                            let pdescriptors: &[c_int] = cast_slice(&cdescript); /* use this instead for or P type descriptors */
-                            vlalen = LONGLONG::from(pdescriptors[jj * 2]);
-                            vlastart = LONGLONG::from(pdescriptors[(jj * 2) + 1]);
+                            /* use this instead for or P type descriptors */
+                            vlalen = LONGLONG::from(get_i32(&cdescript, jj * 2));
+                            vlastart = LONGLONG::from(get_i32(&cdescript, (jj * 2) + 1));
                         }
 
                         if vlalen > 0 {
@@ -12105,10 +12143,9 @@ pub fn fits_compress_table_safe(
                             }
 
                             /* read back the descriptor and save it in the array of descriptors */
-                            let outdescript: &mut [LONGLONG] =
-                                cast_slice_mut(&mut cdescript[datasize..]); // cdescript + datasize as LONGLONG
-                            let mut read_len = outdescript[jj * 2];
-                            let mut read_heapaddr = outdescript[jj * 2 + 1];
+                            let outdescript = &mut cdescript[datasize..]; // cdescript + datasize as LONGLONG
+                            let mut read_len = get_i64(outdescript, jj * 2);
+                            let mut read_heapaddr = get_i64(outdescript, jj * 2 + 1);
                             fits_read_descriptll(
                                 outfptr,
                                 (ii + 1) as c_int,
@@ -12118,8 +12155,8 @@ pub fn fits_compress_table_safe(
                                 status,
                             );
 
-                            outdescript[jj * 2] = read_len;
-                            outdescript[jj * 2 + 1] = read_heapaddr;
+                            set_i64(outdescript, jj * 2, read_len);
+                            set_i64(outdescript, jj * 2 + 1, read_heapaddr);
                         } /* end of vlalen > 0 */
                     } /* end of loop over rows */
 
@@ -12149,14 +12186,13 @@ pub fn fits_compress_table_safe(
                     if BYTESWAPPED {
                         /* byte swap the input and output descriptors */
                         if rm_colwidth[ii] == 16 {
-                            ffswap8(cast_slice_mut(&mut cdescript), rowspertile * 2);
+                            ffswap8_bytes(cast_slice_mut(&mut cdescript), rowspertile * 2);
                         } else {
-                            ffswap4(cast_slice_mut(&mut cdescript), rowspertile * 2);
+                            ffswap4_bytes(cast_slice_mut(&mut cdescript), rowspertile * 2);
                         }
 
-                        let outdescript: &mut [LONGLONG] =
-                            cast_slice_mut(&mut cdescript[datasize..]); // cdescript + datasize as LONGLONG
-                        ffswap8(outdescript, rowspertile * 2);
+                        let outdescript = &mut cdescript[datasize..]; // cdescript + datasize as LONGLONG
+                        ffswap8_bytes(cast_slice_mut(outdescript), rowspertile * 2);
                     }
                     /* compress the array contain both sets of descriptors */
                     compress2mem_from_mem(
@@ -12235,17 +12271,15 @@ pub fn fits_compress_table_safe(
                     rce.set_log_fn(ffpmsg_str);
 
                     if coltype[ii] == TSHORT {
+                        let col = &mut cm_buffer[cm_colstart[ii] as usize..][..datasize];
                         if BYTESWAPPED {
-                            ffswap2(
-                                cast_slice_mut(&mut cm_buffer[cm_colstart[ii] as usize..]),
-                                (datasize / 2).try_into().unwrap(),
-                            );
+                            ffswap2_bytes(cast_slice_mut(col), (datasize / 2).try_into().unwrap());
                         }
 
                         /* datasize/2, not vlalen -- that belongs to the
                         variable-length branch above */
                         let r = rce.encode_short(
-                            cast_slice(&cm_buffer[cm_colstart[ii] as usize..]),
+                            &ne_values(col, c_short::from_ne_bytes),
                             datasize / 2,
                             32,
                         );
@@ -12257,18 +12291,12 @@ pub fn fits_compress_table_safe(
                             }
                         }
                     } else if coltype[ii] == TLONG {
+                        let col = &mut cm_buffer[cm_colstart[ii] as usize..][..datasize];
                         if BYTESWAPPED {
-                            ffswap4(
-                                cast_slice_mut(&mut cm_buffer[cm_colstart[ii] as usize..]),
-                                (datasize / 4).try_into().unwrap(),
-                            );
+                            ffswap4_bytes(cast_slice_mut(col), (datasize / 4).try_into().unwrap());
                         }
 
-                        let r = rce.encode(
-                            cast_slice(&cm_buffer[cm_colstart[ii] as usize..]),
-                            datasize / 4,
-                            32,
-                        );
+                        let r = rce.encode(&ne_values(col, c_int::from_ne_bytes), datasize / 4, 32);
                         match r {
                             Ok(x) => dlen = x,
                             Err(_e) => {
@@ -12828,13 +12856,19 @@ pub fn fits_uncompress_table_safe(
                             rcd.set_log_fn(ffpmsg_str);
                             /* the decoder asserts its output slice is
                             exactly nx long */
+                            /* decoded apart from cptr, which need not be
+                            aligned for c_ushort */
+                            let mut values = vec![0; fullsize / 2];
                             match rcd.decode_short(
                                 cast_slice(&ptr),
                                 fullsize / 2_usize,
                                 32,
-                                cast_slice_mut(&mut cptr[..fullsize]),
+                                &mut values,
                             ) {
-                                Ok(()) => dlen = fullsize,
+                                Ok(()) => {
+                                    cptr[..fullsize].copy_from_slice(cast_slice(&values));
+                                    dlen = fullsize
+                                }
                                 Err(_e) => {
                                     *status = DATA_DECOMPRESSION_ERR;
                                     // return *status;
@@ -12842,7 +12876,10 @@ pub fn fits_uncompress_table_safe(
                             }
 
                             if BYTESWAPPED {
-                                ffswap2(cast_slice_mut(cptr), (fullsize / 2).try_into().unwrap());
+                                ffswap2_bytes(
+                                    cast_slice_mut(cptr),
+                                    (fullsize / 2).try_into().unwrap(),
+                                );
                             }
                         } else {
                             /* gunzip the data into the correct location */
@@ -12863,13 +12900,15 @@ pub fn fits_uncompress_table_safe(
                         if zctype[ii] == RICE_1 {
                             let mut rcd = RCDecoder::new();
                             rcd.set_log_fn(ffpmsg_str);
-                            match rcd.decode(
-                                cast_slice(&ptr),
-                                fullsize / 4_usize,
-                                32,
-                                cast_slice_mut(&mut cptr[..fullsize]),
-                            ) {
-                                Ok(()) => dlen = fullsize,
+                            /* decoded apart from cptr, which need not be
+                            aligned for c_uint */
+                            let mut values = vec![0; fullsize / 4];
+                            match rcd.decode(cast_slice(&ptr), fullsize / 4_usize, 32, &mut values)
+                            {
+                                Ok(()) => {
+                                    cptr[..fullsize].copy_from_slice(cast_slice(&values));
+                                    dlen = fullsize
+                                }
                                 Err(_e) => {
                                     *status = DATA_DECOMPRESSION_ERR;
                                     // return *status;
@@ -12877,7 +12916,10 @@ pub fn fits_uncompress_table_safe(
                             }
 
                             if BYTESWAPPED {
-                                ffswap4(cast_slice_mut(cptr), (fullsize / 4).try_into().unwrap());
+                                ffswap4_bytes(
+                                    cast_slice_mut(cptr),
+                                    (fullsize / 4).try_into().unwrap(),
+                                );
                             }
                         } else {
                             /* gunzip the data into the correct location */
@@ -13199,17 +13241,15 @@ pub fn fits_uncompress_table_safe(
 
                     if rmajor_colwidth[ii] == 8 {
                         /* these are P-type descriptors */
-                        let pdescript: &mut [c_int] =
-                            cast_slice_mut(&mut cm_buffer[cmajor_colstart[ii] as usize..]);
+                        let pdescript = &mut cm_buffer[cmajor_colstart[ii] as usize..];
                         if BYTESWAPPED {
-                            ffswap4(cast_slice_mut(pdescript), rowspertile * 2); /* byte-swap the descriptor */
+                            ffswap4_bytes(cast_slice_mut(pdescript), rowspertile * 2); /* byte-swap the descriptor */
                         }
                     } else if rmajor_colwidth[ii] == 16 {
                         /* these are Q-type descriptors */
-                        let qdescript: &mut [LONGLONG] =
-                            cast_slice_mut(&mut cm_buffer[cmajor_colstart[ii] as usize..]);
+                        let qdescript = &mut cm_buffer[cmajor_colstart[ii] as usize..];
                         if BYTESWAPPED {
-                            ffswap8(cast_slice_mut(qdescript), rowspertile * 2); /* byte-swap the descriptor */
+                            ffswap8_bytes(cast_slice_mut(qdescript), rowspertile * 2); /* byte-swap the descriptor */
                         }
                     } else {
                         /* this should never happen */
@@ -13219,42 +13259,36 @@ pub fn fits_uncompress_table_safe(
                     }
 
                     /* First, set pointer to the Q descriptors, and byte-swap them, if needed */
-                    let descript: &mut [LONGLONG] = cast_slice_mut(
-                        &mut cm_buffer[(cmajor_colstart[ii]
-                            + (rmajor_colwidth[ii] * rowspertile as LONGLONG))
-                            as usize..],
-                    );
+                    let descript = &mut cm_buffer[(cmajor_colstart[ii]
+                        + (rmajor_colwidth[ii] * rowspertile as LONGLONG))
+                        as usize..];
                     if BYTESWAPPED {
                         /* byte-swap the descriptor */
-                        ffswap8(cast_slice_mut(descript), rowspertile * 2);
+                        ffswap8_bytes(cast_slice_mut(descript), rowspertile * 2);
                     }
 
                     /* now uncompress all the individual VLAs, and */
                     /* write them to their original location in the uncompressed file */
 
-                    let pdescript: &[c_int] =
-                        cast_slice(&cm_buffer[cmajor_colstart[ii] as usize..]);
-                    let qdescript: &[LONGLONG] =
-                        cast_slice(&cm_buffer[cmajor_colstart[ii] as usize..]);
-                    let descript: &[LONGLONG] = cast_slice(
-                        &cm_buffer[(cmajor_colstart[ii]
-                            + (rmajor_colwidth[ii] * rowspertile as LONGLONG))
-                            as usize..],
-                    );
+                    let pdescript = &cm_buffer[cmajor_colstart[ii] as usize..];
+                    let qdescript = pdescript;
+                    let descript = &cm_buffer[(cmajor_colstart[ii]
+                        + (rmajor_colwidth[ii] * rowspertile as LONGLONG))
+                        as usize..];
 
                     for jj in 0..(rowspertile as usize) {
                         /* loop over rows */
                         /* get the size and location of the compressed VLA in the compressed table */
-                        cvlalen = descript[jj * 2];
-                        cvlastart = descript[(jj * 2) + 1];
+                        cvlalen = get_i64(descript, jj * 2);
+                        cvlastart = get_i64(descript, (jj * 2) + 1);
                         if cvlalen > 0 {
                             /* get the size and location to write the uncompressed VLA in the uncompressed table */
                             if rmajor_colwidth[ii] == 8 {
-                                vlalen = LONGLONG::from(pdescript[jj * 2]);
-                                vlastart = LONGLONG::from(pdescript[(jj * 2) + 1]);
+                                vlalen = LONGLONG::from(get_i32(pdescript, jj * 2));
+                                vlastart = LONGLONG::from(get_i32(pdescript, (jj * 2) + 1));
                             } else {
-                                vlalen = qdescript[jj * 2];
-                                vlastart = qdescript[(jj * 2) + 1];
+                                vlalen = get_i64(qdescript, jj * 2);
+                                vlastart = get_i64(qdescript, (jj * 2) + 1);
                             }
                             vlamemlen = vlalen as usize * (-coltype[ii] / 10) as usize; /* size of the uncompressed VLA, in bytes */
 
@@ -13298,42 +13332,46 @@ pub fn fits_uncompress_table_safe(
                                     let rcd = RCDecoder::new();
 
                                     if i32::from(-coltype[ii]) == TSHORT {
+                                        /* decoded apart from the byte buffer,
+                                        which need not be aligned for c_ushort */
+                                        let mut values = vec![0; vlalen as usize];
                                         let res = rcd.decode_short(
                                             cast_slice(&compressed_vla),
                                             vlalen as usize,
                                             32,
-                                            cast_slice_mut(&mut uncompressed_vla),
+                                            &mut values,
                                         );
 
                                         if let Err(_e) = res {
                                             *status = DATA_DECOMPRESSION_ERR;
                                             return *status;
                                         }
+                                        uncompressed_vla[..vlamemlen]
+                                            .copy_from_slice(cast_slice(&values));
 
                                         if BYTESWAPPED {
-                                            ffswap2(
-                                                cast_slice_mut(&mut uncompressed_vla),
-                                                vlalen as c_long,
-                                            );
+                                            ffswap2_bytes(&mut uncompressed_vla, vlalen as c_long);
                                         }
                                     } else if i32::from(-coltype[ii]) == TLONG {
+                                        /* decoded apart from the byte buffer,
+                                        which need not be aligned for c_uint */
+                                        let mut values = vec![0; vlalen as usize];
                                         let res = rcd.decode(
                                             cast_slice(&compressed_vla),
                                             vlalen as usize,
                                             32,
-                                            cast_slice_mut(&mut uncompressed_vla),
+                                            &mut values,
                                         );
 
                                         if let Err(_e) = res {
                                             *status = DATA_DECOMPRESSION_ERR;
                                             return *status;
                                         }
+                                        uncompressed_vla[..vlamemlen]
+                                            .copy_from_slice(cast_slice(&values));
 
                                         if BYTESWAPPED {
-                                            ffswap4(
-                                                cast_slice_mut(&mut uncompressed_vla),
-                                                vlalen as c_long,
-                                            );
+                                            ffswap4_bytes(&mut uncompressed_vla, vlalen as c_long);
                                         }
                                     } else if i32::from(-coltype[ii]) == TBYTE {
                                         let res = rcd.decode_byte(
