@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does (and as `fits_create_memfile` already did). Faking "no realloc" with a
   stub returning null made moving past the first HDU of a read-only file fail
   with `MEMORY_ALLOCATION`.
+- `fits_compress_table` and `fits_uncompress_table` panicked on a table whose
+  `1I`/`1J` column (with `RICE_1`) or variable-length column followed one of a
+  different width, such as `1B`, with an odd number of rows per tile. That
+  column sits at an unaligned offset in the transposed buffer, which was cast
+  to `i16`/`i32`/`i64`; it is now read and byte-swapped a byte at a time.
 
 ### Changed
 - `fits_open_memfile`'s `mem_realloc` parameter is now an `Option`, in both the

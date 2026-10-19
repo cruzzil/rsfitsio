@@ -9,7 +9,7 @@
 mod common;
 
 use crate::common::with_temp_file;
-use bytemuck::cast_slice;
+use bytemuck::{cast_slice, cast_slice_mut};
 use libc::{c_int, c_long};
 use rsfitsio::aliases::rust_api::*;
 use rsfitsio::fitsio::{
@@ -113,7 +113,9 @@ fn check(bitpix: c_int, datatype: c_int, scaled: bool) {
             assert_eq!(status, 0, "set_bscale failed");
         }
 
-        let mut out = vec![0u8; NELEM * width(datatype)];
+        // backed by u64 so the bytes are aligned for every output datatype
+        let mut words = vec![0u64; (NELEM * width(datatype)).div_ceil(8)];
+        let out = &mut cast_slice_mut(&mut words)[..NELEM * width(datatype)];
         let mut anynul: c_int = 0;
         fits_read_img(
             f,
@@ -121,13 +123,13 @@ fn check(bitpix: c_int, datatype: c_int, scaled: bool) {
             1,
             NELEM as LONGLONG,
             None,
-            &mut out,
+            out,
             Some(&mut anynul),
             &mut status,
         );
         assert_eq!(status, 0, "read failed");
 
-        let got = decode(datatype, &out);
+        let got = decode(datatype, out);
         for (i, v) in got.iter().enumerate() {
             assert_eq!(*v, expected(i) * scale, "pixel {i}");
         }

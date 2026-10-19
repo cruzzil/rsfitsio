@@ -67,3 +67,56 @@ fn ffswap8_slow(svalues: &mut [i64], nvals: c_long) {
 pub(crate) fn ffswap8(ivalues: &mut [i64], nvals: c_long) {
     ffswap8_slow(ivalues, nvals);
 }
+
+/// Swaps the bytes of `nvals` 2-byte values held in a byte buffer, which,
+/// unlike [`ffswap2`]'s, need not be aligned for `i16`.
+pub(crate) fn ffswap2_bytes(bytes: &mut [u8], nvals: c_long) {
+    bytes
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
+        .take(nvals as usize)
+        .for_each(|value| value.reverse());
+}
+
+/// Swaps the bytes of `nvals` 4-byte values held in a byte buffer, which,
+/// unlike [`ffswap4`]'s, need not be aligned for `INT32BIT`.
+pub(crate) fn ffswap4_bytes(bytes: &mut [u8], nvals: c_long) {
+    bytes
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .take(nvals as usize)
+        .for_each(|value| value.reverse());
+}
+
+/// Swaps the bytes of `nvals` 8-byte values held in a byte buffer, which,
+/// unlike [`ffswap8`]'s, need not be aligned for `i64`.
+pub(crate) fn ffswap8_bytes(bytes: &mut [u8], nvals: c_long) {
+    bytes
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
+        .take(nvals as usize)
+        .for_each(|value| value.reverse());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_swap_bytes_at_an_odd_offset() {
+        let mut buf: Vec<u8> = (0..16).collect();
+        ffswap2_bytes(&mut buf[1..], 2);
+        assert_eq!(buf[..6], [0, 2, 1, 4, 3, 5]);
+
+        let mut buf: Vec<u8> = (0..16).collect();
+        ffswap4_bytes(&mut buf[1..], 1);
+        assert_eq!(buf[..6], [0, 4, 3, 2, 1, 5]);
+
+        let mut buf: Vec<u8> = (0..16).collect();
+        ffswap8_bytes(&mut buf[1..], 1);
+        assert_eq!(buf[..10], [0, 8, 7, 6, 5, 4, 3, 2, 1, 9]);
+    }
+}
